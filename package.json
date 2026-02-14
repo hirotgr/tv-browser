@@ -1,0 +1,21 @@
+{
+  "name": "tv-watchlist",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Single-card TradingView Electron app",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "build": "tsup",
+    "postbuild": "npm run copy:assets",
+    "copy:assets": "mkdir -p dist/renderer && cp src/renderer/index.html src/renderer/styles.css dist/renderer/",
+    "start": "npm run build && electron .",
+    "dev": "npm run start",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "electron": "^33.2.1",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.3"
+  }
+}

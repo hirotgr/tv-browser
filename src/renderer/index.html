@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TV Browser</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="topbar-right">
+          <span id="clock" aria-live="polite"></span>
+          <section id="settings-panel">
+            <div id="width-controls" role="group" aria-label="Window width controls">
+              <button id="expand-width-button" type="button" title="Set width to 1920">X+</button>
+              <button id="shrink-width-button" type="button" title="Set width to 425">X-</button>
+            </div>
+            <label class="panel-item">
+              <select id="width-origin-select">
+                <option value="right">Right</option>
+                <option value="left">Left</option>
+              </select>
+            </label>
+            <label class="panel-item">
+              <select id="theme-select">
+                <option value="dark">Dark</option>
+                <option value="light">Light</option>
+              </select>
+            </label>
+            <label class="panel-item panel-toggle">
+              <input id="always-on-top-toggle" type="checkbox" />
+              <span>AoT</span>
+            </label>
+          </section>
+        </div>
+      </header>
+
+      <div id="card-frame" aria-hidden="true">
+        <button id="resize-handle" type="button" aria-label="Resize component" title="Resize"></button>
+      </div>
+    </div>
+    <script type="module" src="./app.mjs"></script>
+  </body>
+</html>
