@@ -12,10 +12,17 @@ const clockElement = mustQuery<HTMLSpanElement>("#clock");
 const expandWidthButton = mustQuery<HTMLButtonElement>("#expand-width-button");
 const shrinkWidthButton = mustQuery<HTMLButtonElement>("#shrink-width-button");
 const widthOriginSelect = mustQuery<HTMLSelectElement>("#width-origin-select");
+const openSettingsButton = mustQuery<HTMLButtonElement>("#open-settings-button");
+const settingsDialog = mustQuery<HTMLDialogElement>("#settings-dialog");
+const settingsForm = mustQuery<HTMLFormElement>("#settings-form");
+const settingsCancelButton = mustQuery<HTMLButtonElement>("#settings-cancel-button");
 const themeSelect = mustQuery<HTMLSelectElement>("#theme-select");
 const alwaysOnTopToggle = mustQuery<HTMLInputElement>("#always-on-top-toggle");
+const siteUrlInput = mustQuery<HTMLInputElement>("#site-url-input");
+const siteUrlError = mustQuery<HTMLParagraphElement>("#site-url-error");
 const cardFrame = mustQuery<HTMLElement>("#card-frame");
 const resizeHandle = mustQuery<HTMLButtonElement>("#resize-handle");
+const SITE_URL_MAX_LENGTH = 64;
 
 const jstFormatter = new Intl.DateTimeFormat("ja-JP", {
   hour: "2-digit",
@@ -43,6 +50,39 @@ function setTheme(theme: ThemeMode): void {
   document.body.dataset.theme = theme;
 }
 
+function setSiteUrlError(message: string): void {
+  siteUrlError.textContent = message;
+}
+
+function validateSiteUrl(rawValue: string): { ok: true; value: string } | { ok: false; message: string } {
+  const value = rawValue.trim();
+  if (value.length === 0) {
+    return { ok: false, message: "Site URL is required." };
+  }
+
+  if (value.length > SITE_URL_MAX_LENGTH) {
+    return { ok: false, message: `Site URL must be ${SITE_URL_MAX_LENGTH} characters or fewer.` };
+  }
+
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "https:") {
+      return { ok: false, message: "Site URL must start with https://." };
+    }
+    return { ok: true, value };
+  } catch {
+    return { ok: false, message: "Site URL must be a valid URL." };
+  }
+}
+
+async function setSettingsModalOpen(isOpen: boolean): Promise<void> {
+  try {
+    await window.desktopApi.setTradingViewSuspended(isOpen);
+  } catch (error) {
+    console.error("Failed to toggle trading view visibility:", error);
+  }
+}
+
 function updateClock(): void {
   clockElement.textContent = `${jstFormatter.format(new Date())} JST`;
 }
@@ -63,6 +103,7 @@ function applySettings(nextSettings: AppSettings): void {
   widthOriginSelect.value = nextSettings.widthResizeOrigin;
   themeSelect.value = nextSettings.theme;
   alwaysOnTopToggle.checked = nextSettings.alwaysOnTop;
+  siteUrlInput.value = nextSettings.siteUrl;
 }
 
 function selectedWidthOrigin(): WidthResizeOrigin {
@@ -165,17 +206,61 @@ function installEvents(): void {
     applySettings(updated);
   });
 
-  themeSelect.addEventListener("change", async () => {
-    const theme: ThemeMode = themeSelect.value === "light" ? "light" : "dark";
-    const updated = await window.desktopApi.updateSettings({ theme });
-    applySettings(updated);
+  openSettingsButton.addEventListener("click", () => {
+    if (!settingsDialog.open) {
+      if (currentSettings) {
+        applySettings(currentSettings);
+      }
+      setSiteUrlError("");
+      void setSettingsModalOpen(true).then(() => {
+        try {
+          settingsDialog.showModal();
+        } catch {
+          void setSettingsModalOpen(false);
+        }
+      });
+    }
   });
 
-  alwaysOnTopToggle.addEventListener("change", async () => {
-    const updated = await window.desktopApi.updateSettings({
-      alwaysOnTop: alwaysOnTopToggle.checked
-    });
-    applySettings(updated);
+  settingsCancelButton.addEventListener("click", () => {
+    settingsDialog.close();
+  });
+
+  settingsDialog.addEventListener("close", () => {
+    void setSettingsModalOpen(false);
+    setSiteUrlError("");
+    if (currentSettings) {
+      applySettings(currentSettings);
+    }
+  });
+
+  siteUrlInput.addEventListener("input", () => {
+    if (siteUrlError.textContent) {
+      setSiteUrlError("");
+    }
+  });
+
+  settingsForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const siteUrlResult = validateSiteUrl(siteUrlInput.value);
+    if (!siteUrlResult.ok) {
+      setSiteUrlError(siteUrlResult.message);
+      return;
+    }
+
+    try {
+      setSiteUrlError("");
+      const theme: ThemeMode = themeSelect.value === "light" ? "light" : "dark";
+      const updated = await window.desktopApi.updateSettings({
+        theme,
+        alwaysOnTop: alwaysOnTopToggle.checked,
+        siteUrl: siteUrlResult.value
+      });
+      applySettings(updated);
+      settingsDialog.close();
+    } catch {
+      setSiteUrlError("Failed to save settings.");
+    }
   });
 
   resizeHandle.addEventListener("pointerdown", startResize);

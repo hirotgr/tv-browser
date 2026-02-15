@@ -17,6 +17,7 @@ import_electron.contextBridge.exposeInMainWorld("desktopApi", {
   resizeCard: (size) => import_electron.ipcRenderer.invoke("card:resize", size),
   getLayout: () => import_electron.ipcRenderer.invoke("layout:get"),
   setWindowWidth: (payload) => import_electron.ipcRenderer.invoke("window:set-width", payload),
+  setTradingViewSuspended: (suspended) => import_electron.ipcRenderer.invoke("trading-view:set-suspended", suspended),
   onLayoutChanged: (callback) => subscribe("layout:changed", callback),
   onSettingsChanged: (callback) => subscribe("settings:changed", callback)
 });

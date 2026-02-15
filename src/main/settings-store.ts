@@ -3,10 +3,12 @@ import path from "node:path";
 import type { AppSettings } from "../shared/types";
 
 const SETTINGS_FILE_NAME = "settings.json";
+const MAX_SITE_URL_LENGTH = 64;
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: "dark",
   alwaysOnTop: false,
+  siteUrl: "https://www.tradingview.com",
   cardWidth: 980,
   cardHeight: 680,
   windowWidth: 1320,
@@ -33,10 +35,28 @@ function asWidthResizeOrigin(
   return value === "right" || value === "left" ? value : fallback;
 }
 
+function asSiteUrl(value: unknown, fallback: string): string {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_SITE_URL_LENGTH) {
+    return fallback;
+  }
+
+  try {
+    return new URL(trimmed).protocol === "https:" ? trimmed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function sanitize(raw: Partial<AppSettings>): AppSettings {
   return {
     theme: asTheme(raw.theme, DEFAULT_SETTINGS.theme),
     alwaysOnTop: asBoolean(raw.alwaysOnTop, DEFAULT_SETTINGS.alwaysOnTop),
+    siteUrl: asSiteUrl(raw.siteUrl, DEFAULT_SETTINGS.siteUrl),
     cardWidth: asFiniteNumber(raw.cardWidth, DEFAULT_SETTINGS.cardWidth),
     cardHeight: asFiniteNumber(raw.cardHeight, DEFAULT_SETTINGS.cardHeight),
     windowWidth: asFiniteNumber(raw.windowWidth, DEFAULT_SETTINGS.windowWidth),

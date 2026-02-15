@@ -10,10 +10,17 @@ var clockElement = mustQuery("#clock");
 var expandWidthButton = mustQuery("#expand-width-button");
 var shrinkWidthButton = mustQuery("#shrink-width-button");
 var widthOriginSelect = mustQuery("#width-origin-select");
+var openSettingsButton = mustQuery("#open-settings-button");
+var settingsDialog = mustQuery("#settings-dialog");
+var settingsForm = mustQuery("#settings-form");
+var settingsCancelButton = mustQuery("#settings-cancel-button");
 var themeSelect = mustQuery("#theme-select");
 var alwaysOnTopToggle = mustQuery("#always-on-top-toggle");
+var siteUrlInput = mustQuery("#site-url-input");
+var siteUrlError = mustQuery("#site-url-error");
 var cardFrame = mustQuery("#card-frame");
 var resizeHandle = mustQuery("#resize-handle");
+var SITE_URL_MAX_LENGTH = 64;
 var jstFormatter = new Intl.DateTimeFormat("ja-JP", {
   hour: "2-digit",
   minute: "2-digit",
@@ -27,6 +34,34 @@ var resizeInFlight = false;
 var queuedResize = null;
 function setTheme(theme) {
   document.body.dataset.theme = theme;
+}
+function setSiteUrlError(message) {
+  siteUrlError.textContent = message;
+}
+function validateSiteUrl(rawValue) {
+  const value = rawValue.trim();
+  if (value.length === 0) {
+    return { ok: false, message: "Site URL is required." };
+  }
+  if (value.length > SITE_URL_MAX_LENGTH) {
+    return { ok: false, message: `Site URL must be ${SITE_URL_MAX_LENGTH} characters or fewer.` };
+  }
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "https:") {
+      return { ok: false, message: "Site URL must start with https://." };
+    }
+    return { ok: true, value };
+  } catch {
+    return { ok: false, message: "Site URL must be a valid URL." };
+  }
+}
+async function setSettingsModalOpen(isOpen) {
+  try {
+    await window.desktopApi.setTradingViewSuspended(isOpen);
+  } catch (error) {
+    console.error("Failed to toggle trading view visibility:", error);
+  }
 }
 function updateClock() {
   clockElement.textContent = `${jstFormatter.format(/* @__PURE__ */ new Date())} JST`;
@@ -46,6 +81,7 @@ function applySettings(nextSettings) {
   widthOriginSelect.value = nextSettings.widthResizeOrigin;
   themeSelect.value = nextSettings.theme;
   alwaysOnTopToggle.checked = nextSettings.alwaysOnTop;
+  siteUrlInput.value = nextSettings.siteUrl;
 }
 function selectedWidthOrigin() {
   return widthOriginSelect.value === "left" ? "left" : "right";
@@ -131,16 +167,56 @@ function installEvents() {
     });
     applySettings(updated);
   });
-  themeSelect.addEventListener("change", async () => {
-    const theme = themeSelect.value === "light" ? "light" : "dark";
-    const updated = await window.desktopApi.updateSettings({ theme });
-    applySettings(updated);
+  openSettingsButton.addEventListener("click", () => {
+    if (!settingsDialog.open) {
+      if (currentSettings) {
+        applySettings(currentSettings);
+      }
+      setSiteUrlError("");
+      void setSettingsModalOpen(true).then(() => {
+        try {
+          settingsDialog.showModal();
+        } catch {
+          void setSettingsModalOpen(false);
+        }
+      });
+    }
   });
-  alwaysOnTopToggle.addEventListener("change", async () => {
-    const updated = await window.desktopApi.updateSettings({
-      alwaysOnTop: alwaysOnTopToggle.checked
-    });
-    applySettings(updated);
+  settingsCancelButton.addEventListener("click", () => {
+    settingsDialog.close();
+  });
+  settingsDialog.addEventListener("close", () => {
+    void setSettingsModalOpen(false);
+    setSiteUrlError("");
+    if (currentSettings) {
+      applySettings(currentSettings);
+    }
+  });
+  siteUrlInput.addEventListener("input", () => {
+    if (siteUrlError.textContent) {
+      setSiteUrlError("");
+    }
+  });
+  settingsForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const siteUrlResult = validateSiteUrl(siteUrlInput.value);
+    if (!siteUrlResult.ok) {
+      setSiteUrlError(siteUrlResult.message);
+      return;
+    }
+    try {
+      setSiteUrlError("");
+      const theme = themeSelect.value === "light" ? "light" : "dark";
+      const updated = await window.desktopApi.updateSettings({
+        theme,
+        alwaysOnTop: alwaysOnTopToggle.checked,
+        siteUrl: siteUrlResult.value
+      });
+      applySettings(updated);
+      settingsDialog.close();
+    } catch {
+      setSiteUrlError("Failed to save settings.");
+    }
   });
   resizeHandle.addEventListener("pointerdown", startResize);
   resizeHandle.addEventListener("pointermove", continueResize);

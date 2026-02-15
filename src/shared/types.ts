@@ -4,6 +4,7 @@ export type WidthResizeOrigin = "right" | "left";
 export interface AppSettings {
   theme: ThemeMode;
   alwaysOnTop: boolean;
+  siteUrl: string;
   cardWidth: number;
   cardHeight: number;
   windowWidth: number;

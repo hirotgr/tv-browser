@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld("desktopApi", {
     width: number;
     origin: WidthResizeOrigin;
   }): Promise<{ width: number; height: number }> => ipcRenderer.invoke("window:set-width", payload),
+  setTradingViewSuspended: (suspended: boolean): Promise<void> =>
+    ipcRenderer.invoke("trading-view:set-suspended", suspended),
   onLayoutChanged: (callback: (layout: LayoutMetrics) => void): Unsubscribe =>
     subscribe<LayoutMetrics>("layout:changed", callback),
   onSettingsChanged: (callback: (nextSettings: AppSettings) => void): Unsubscribe =>

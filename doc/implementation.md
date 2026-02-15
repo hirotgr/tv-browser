@@ -3,15 +3,16 @@
 ## 1. 概要
 
 `TV Browser` は Electron + TypeScript で実装した macOS 向けデスクトップアプリです。
-アプリ内に 1 枚のカード領域を持ち、その内部に `https://www.tradingview.com` を表示します。
+アプリ内に 1 枚のカード領域を持ち、その内部に `Site URL`（既定: `https://www.tradingview.com`）を表示します。
 
 主な特徴:
 
 - TradingView を 1 カードで表示
 - カード右下ハンドルでリサイズ
 - カードはウィンドウ右上基準で配置（ウィンドウが狭い場合は左にはみ出し許容）
-- ヘッダー右側に `HH:MM JST` 時計と設定 UI（`X+` / `X-` / `Right|Left` / `Dark|Light` / `AoT`）
-- テーマ、AoT、カードサイズ、ウィンドウサイズ、幅変更起点を永続化
+- ヘッダー右側に `HH:MM JST` 時計と操作 UI（`X+` / `X-` / `Right|Left` / `gear`）
+- `Settings` モーダルで `Theme` / `Always on Top` / `Site URL` を設定
+- テーマ、AoT、Site URL、カードサイズ、ウィンドウサイズ、幅変更起点を永続化
 - 外部リンクは `https:` のみ外部ブラウザで許可
 
 ---
@@ -80,7 +81,7 @@ release/
 
 TradingView View の要点:
 
-- URL 固定: `https://www.tradingview.com`
+- URL: 設定値 `siteUrl`（既定 `https://www.tradingview.com`）
 - `partition: "persist:tradingview"`（ログイン状態維持）
 - `sandbox: true`
 - `setWindowOpenHandler` で `https:` のみ `shell.openExternal` 許可
@@ -92,7 +93,7 @@ TradingView View の要点:
 責務:
 
 - 時計表示（`HH:MM JST`）
-- UI操作（テーマ、AoT、幅変更、起点切替）
+- UI操作（幅変更、起点切替、Settings モーダル）
 - カードリサイズ操作
 - メインから通知された `LayoutMetrics` の反映
 
@@ -140,6 +141,7 @@ TradingView View の要点:
 interface AppSettings {
   theme: "dark" | "light";
   alwaysOnTop: boolean;
+  siteUrl: string;
   cardWidth: number;
   cardHeight: number;
   windowWidth: number;
@@ -156,6 +158,7 @@ interface AppSettings {
 - デフォルト値:
   - `theme: "dark"`
   - `alwaysOnTop: false`
+  - `siteUrl: "https://www.tradingview.com"`
   - `cardWidth: 980`
   - `cardHeight: 680`
   - `windowWidth: 1320`
@@ -200,13 +203,22 @@ interface AppSettings {
 
 ## 8. UI仕様（現行実装）
 
-上部右寄せパネル:
+上部右寄せコントロール:
 
 - `X+` ボタン（幅 1920）
 - `X-` ボタン（幅 425）
 - `Right/Left` セレクト（幅変更起点）
-- `Dark/Light` セレクト
-- `AoT` チェックボックス
+- `gear` ボタン（Settings モーダルを開く）
+
+Settings モーダル:
+
+- `Theme` セレクト（Dark / Light）
+- `Always on Top` チェックボックス
+- `Site URL` テキスト入力（最大 64 文字）
+- `Cancel` / `Save` ボタン
+- Save 時に `Theme` / `Always on Top` / `Site URL` を一括反映
+- `Site URL` は `https:` のみ許可（空文字、64文字超、非URL、`http:` はエラー）
+- モーダル表示中にウィンドウを閉じても、次回起動時はモーダル状態を持ち越さず通常表示で開始
 
 時計:
 

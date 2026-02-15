@@ -11,30 +11,54 @@
       <header class="topbar">
         <div class="topbar-right">
           <span id="clock" aria-live="polite"></span>
-          <section id="settings-panel">
-            <div id="width-controls" role="group" aria-label="Window width controls">
-              <button id="expand-width-button" type="button" title="Set width to 1920">X+</button>
-              <button id="shrink-width-button" type="button" title="Set width to 425">X-</button>
-            </div>
-            <label class="panel-item">
-              <select id="width-origin-select">
-                <option value="right">Right</option>
-                <option value="left">Left</option>
-              </select>
-            </label>
-            <label class="panel-item">
-              <select id="theme-select">
-                <option value="dark">Dark</option>
-                <option value="light">Light</option>
-              </select>
-            </label>
-            <label class="panel-item panel-toggle">
-              <input id="always-on-top-toggle" type="checkbox" />
-              <span>AoT</span>
-            </label>
-          </section>
+          <div id="width-controls" role="group" aria-label="Window width controls">
+            <button id="expand-width-button" type="button" title="Set width to 1920">X+</button>
+            <button id="shrink-width-button" type="button" title="Set width to 425">X-</button>
+          </div>
+          <label class="panel-item" for="width-origin-select">
+            <select id="width-origin-select" aria-label="Display Mode">
+              <option value="right">Right</option>
+              <option value="left">Left</option>
+            </select>
+          </label>
+          <button id="open-settings-button" type="button" aria-label="Open Settings" title="Settings">
+            &#9881;
+          </button>
         </div>
       </header>
+
+      <dialog id="settings-dialog" aria-labelledby="settings-title">
+        <form id="settings-form" novalidate>
+          <h2 id="settings-title">Settings</h2>
+          <label class="settings-field" for="theme-select">
+            <span>Theme</span>
+            <select id="theme-select">
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+            </select>
+          </label>
+          <label class="settings-field settings-field-toggle" for="always-on-top-toggle">
+            <span>Always on Top</span>
+            <input id="always-on-top-toggle" type="checkbox" />
+          </label>
+          <label class="settings-field" for="site-url-input">
+            <span>Site URL</span>
+            <input
+              id="site-url-input"
+              type="text"
+              maxlength="64"
+              inputmode="url"
+              autocomplete="off"
+              spellcheck="false"
+            />
+          </label>
+          <p id="site-url-error" role="alert" aria-live="polite"></p>
+          <div class="settings-actions">
+            <button id="settings-cancel-button" type="button">Cancel</button>
+            <button id="settings-save-button" type="submit">Save</button>
+          </div>
+        </form>
+      </dialog>
 
       <div id="card-frame" aria-hidden="true">
         <button id="resize-handle" type="button" aria-label="Resize component" title="Resize"></button>

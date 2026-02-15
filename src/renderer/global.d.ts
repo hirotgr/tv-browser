@@ -9,6 +9,7 @@ interface DesktopApi {
     width: number;
     height: number;
   }>;
+  setTradingViewSuspended(suspended: boolean): Promise<void>;
   onLayoutChanged(callback: (layout: LayoutMetrics) => void): () => void;
   onSettingsChanged(callback: (settings: AppSettings) => void): () => void;
 }

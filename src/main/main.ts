@@ -16,7 +16,6 @@ import type {
   WidthResizeOrigin
 } from "../shared/types";
 
-const TRADINGVIEW_URL = "https://www.tradingview.com";
 const TRADINGVIEW_PARTITION = "persist:tradingview";
 
 const HEADER_HEIGHT = 38;
@@ -32,6 +31,7 @@ const MIN_WINDOW_WIDTH = 320;
 const MIN_WINDOW_HEIGHT = 640;
 
 const SAVE_DEBOUNCE_MS = 250;
+const MAX_SITE_URL_LENGTH = 64;
 
 let mainWindow: BrowserWindow | null = null;
 let tradingView: WebContentsView | null = null;
@@ -39,6 +39,7 @@ let settings: AppSettings = { ...DEFAULT_SETTINGS };
 let latestLayout: LayoutMetrics | null = null;
 let saveTimer: NodeJS.Timeout | null = null;
 let ipcRegistered = false;
+let tradingViewSuspended = false;
 
 function safeNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -52,6 +53,23 @@ function sanitizeTheme(value: unknown, fallback: ThemeMode): ThemeMode {
   return value === "dark" || value === "light" ? value : fallback;
 }
 
+function sanitizeSiteUrl(value: unknown, fallback: string): string {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_SITE_URL_LENGTH) {
+    return fallback;
+  }
+
+  try {
+    return new URL(trimmed).protocol === "https:" ? trimmed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function sanitizeWidthResizeOrigin(
   value: unknown,
   fallback: WidthResizeOrigin
@@ -63,6 +81,7 @@ function sanitizeSettings(next: AppSettings): AppSettings {
   const base = {
     theme: sanitizeTheme(next.theme, DEFAULT_SETTINGS.theme),
     alwaysOnTop: Boolean(next.alwaysOnTop),
+    siteUrl: sanitizeSiteUrl(next.siteUrl, DEFAULT_SETTINGS.siteUrl),
     cardWidth: sanitizeCoordinate(next.cardWidth),
     cardHeight: sanitizeCoordinate(next.cardHeight),
     windowWidth: sanitizeCoordinate(next.windowWidth),
@@ -142,12 +161,16 @@ function broadcastLayout(): void {
   const [windowWidth] = mainWindow.getContentSize();
   latestLayout = computeLayout(windowWidth);
 
-  tradingView.setBounds({
-    x: latestLayout.contentX,
-    y: latestLayout.contentY,
-    width: latestLayout.contentWidth,
-    height: latestLayout.contentHeight
-  });
+  if (tradingViewSuspended) {
+    tradingView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+  } else {
+    tradingView.setBounds({
+      x: latestLayout.contentX,
+      y: latestLayout.contentY,
+      width: latestLayout.contentWidth,
+      height: latestLayout.contentHeight
+    });
+  }
 
   if (!mainWindow.webContents.isDestroyed()) {
     mainWindow.webContents.send("layout:changed", latestLayout);
@@ -176,7 +199,18 @@ function isAllowedExternalUrl(rawUrl: string): boolean {
   }
 }
 
+function loadTradingViewTarget(url: string): void {
+  if (!tradingView) {
+    return;
+  }
+
+  void tradingView.webContents.loadURL(url).catch((error: unknown) => {
+    console.error("Failed to load site URL:", error);
+  });
+}
+
 function createMainWindow(): void {
+  tradingViewSuspended = false;
   const initialWidth = Math.max(MIN_WINDOW_WIDTH, settings.windowWidth);
   const initialHeight = Math.max(MIN_WINDOW_HEIGHT, settings.windowHeight);
 
@@ -213,7 +247,7 @@ function createMainWindow(): void {
     return { action: "deny" };
   });
 
-  void tradingView.webContents.loadURL(TRADINGVIEW_URL);
+  loadTradingViewTarget(settings.siteUrl);
   void mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
 
   mainWindow.on("resize", () => {
@@ -251,6 +285,7 @@ function createMainWindow(): void {
     mainWindow = null;
     tradingView = null;
     latestLayout = null;
+    tradingViewSuspended = false;
   });
 
   mainWindow.webContents.on("did-finish-load", () => {
@@ -270,10 +305,12 @@ function registerIpc(): void {
   });
 
   ipcMain.handle("settings:update", (_event, patch: Partial<AppSettings>) => {
+    const previousSiteUrl = settings.siteUrl;
     const next: AppSettings = {
       ...settings,
       theme: sanitizeTheme(patch.theme, settings.theme),
       alwaysOnTop: typeof patch.alwaysOnTop === "boolean" ? patch.alwaysOnTop : settings.alwaysOnTop,
+      siteUrl: sanitizeSiteUrl(patch.siteUrl, settings.siteUrl),
       cardWidth: safeNumber(patch.cardWidth, settings.cardWidth),
       cardHeight: safeNumber(patch.cardHeight, settings.cardHeight),
       windowWidth: safeNumber(patch.windowWidth, settings.windowWidth),
@@ -285,6 +322,9 @@ function registerIpc(): void {
     };
 
     settings = sanitizeSettings(next);
+    if (settings.siteUrl !== previousSiteUrl) {
+      loadTradingViewTarget(settings.siteUrl);
+    }
     applyThemeAndWindowFlags();
     broadcastLayout();
     scheduleSettingsSave();
@@ -310,6 +350,11 @@ function registerIpc(): void {
       latestLayout = computeLayout(windowWidth);
     }
     return latestLayout;
+  });
+
+  ipcMain.handle("trading-view:set-suspended", (_event, suspended: boolean) => {
+    tradingViewSuspended = Boolean(suspended);
+    broadcastLayout();
   });
 
   ipcMain.handle(

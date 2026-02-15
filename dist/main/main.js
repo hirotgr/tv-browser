@@ -30,9 +30,11 @@ var import_electron = require("electron");
 var import_node_fs = __toESM(require("fs"));
 var import_node_path = __toESM(require("path"));
 var SETTINGS_FILE_NAME = "settings.json";
+var MAX_SITE_URL_LENGTH = 64;
 var DEFAULT_SETTINGS = {
   theme: "dark",
   alwaysOnTop: false,
+  siteUrl: "https://www.tradingview.com",
   cardWidth: 980,
   cardHeight: 680,
   windowWidth: 1320,
@@ -51,10 +53,25 @@ function asTheme(value, fallback) {
 function asWidthResizeOrigin(value, fallback) {
   return value === "right" || value === "left" ? value : fallback;
 }
+function asSiteUrl(value, fallback) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_SITE_URL_LENGTH) {
+    return fallback;
+  }
+  try {
+    return new URL(trimmed).protocol === "https:" ? trimmed : fallback;
+  } catch {
+    return fallback;
+  }
+}
 function sanitize(raw) {
   return {
     theme: asTheme(raw.theme, DEFAULT_SETTINGS.theme),
     alwaysOnTop: asBoolean(raw.alwaysOnTop, DEFAULT_SETTINGS.alwaysOnTop),
+    siteUrl: asSiteUrl(raw.siteUrl, DEFAULT_SETTINGS.siteUrl),
     cardWidth: asFiniteNumber(raw.cardWidth, DEFAULT_SETTINGS.cardWidth),
     cardHeight: asFiniteNumber(raw.cardHeight, DEFAULT_SETTINGS.cardHeight),
     windowWidth: asFiniteNumber(raw.windowWidth, DEFAULT_SETTINGS.windowWidth),
@@ -88,7 +105,6 @@ function saveSettings(userDataPath, settings2) {
 }
 
 // src/main/main.ts
-var TRADINGVIEW_URL = "https://www.tradingview.com";
 var TRADINGVIEW_PARTITION = "persist:tradingview";
 var HEADER_HEIGHT = 38;
 var WINDOW_PADDING = 2;
@@ -101,12 +117,14 @@ var MIN_CARD_HEIGHT = MIN_CONTENT_HEIGHT + CARD_PADDING * 2;
 var MIN_WINDOW_WIDTH = 320;
 var MIN_WINDOW_HEIGHT = 640;
 var SAVE_DEBOUNCE_MS = 250;
+var MAX_SITE_URL_LENGTH2 = 64;
 var mainWindow = null;
 var tradingView = null;
 var settings = { ...DEFAULT_SETTINGS };
 var latestLayout = null;
 var saveTimer = null;
 var ipcRegistered = false;
+var tradingViewSuspended = false;
 function safeNumber(value, fallback = 0) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
@@ -116,6 +134,20 @@ function sanitizeCoordinate(value) {
 function sanitizeTheme(value, fallback) {
   return value === "dark" || value === "light" ? value : fallback;
 }
+function sanitizeSiteUrl(value, fallback) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_SITE_URL_LENGTH2) {
+    return fallback;
+  }
+  try {
+    return new URL(trimmed).protocol === "https:" ? trimmed : fallback;
+  } catch {
+    return fallback;
+  }
+}
 function sanitizeWidthResizeOrigin(value, fallback) {
   return value === "left" || value === "right" ? value : fallback;
 }
@@ -123,6 +155,7 @@ function sanitizeSettings(next) {
   const base = {
     theme: sanitizeTheme(next.theme, DEFAULT_SETTINGS.theme),
     alwaysOnTop: Boolean(next.alwaysOnTop),
+    siteUrl: sanitizeSiteUrl(next.siteUrl, DEFAULT_SETTINGS.siteUrl),
     cardWidth: sanitizeCoordinate(next.cardWidth),
     cardHeight: sanitizeCoordinate(next.cardHeight),
     windowWidth: sanitizeCoordinate(next.windowWidth),
@@ -190,12 +223,16 @@ function broadcastLayout() {
   }
   const [windowWidth] = mainWindow.getContentSize();
   latestLayout = computeLayout(windowWidth);
-  tradingView.setBounds({
-    x: latestLayout.contentX,
-    y: latestLayout.contentY,
-    width: latestLayout.contentWidth,
-    height: latestLayout.contentHeight
-  });
+  if (tradingViewSuspended) {
+    tradingView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+  } else {
+    tradingView.setBounds({
+      x: latestLayout.contentX,
+      y: latestLayout.contentY,
+      width: latestLayout.contentWidth,
+      height: latestLayout.contentHeight
+    });
+  }
   if (!mainWindow.webContents.isDestroyed()) {
     mainWindow.webContents.send("layout:changed", latestLayout);
   }
@@ -218,7 +255,16 @@ function isAllowedExternalUrl(rawUrl) {
     return false;
   }
 }
+function loadTradingViewTarget(url) {
+  if (!tradingView) {
+    return;
+  }
+  void tradingView.webContents.loadURL(url).catch((error) => {
+    console.error("Failed to load site URL:", error);
+  });
+}
 function createMainWindow() {
+  tradingViewSuspended = false;
   const initialWidth = Math.max(MIN_WINDOW_WIDTH, settings.windowWidth);
   const initialHeight = Math.max(MIN_WINDOW_HEIGHT, settings.windowHeight);
   mainWindow = new import_electron.BrowserWindow({
@@ -250,7 +296,7 @@ function createMainWindow() {
     }
     return { action: "deny" };
   });
-  void tradingView.webContents.loadURL(TRADINGVIEW_URL);
+  loadTradingViewTarget(settings.siteUrl);
   void mainWindow.loadFile(import_node_path2.default.join(__dirname, "../renderer/index.html"));
   mainWindow.on("resize", () => {
     const windowRef = mainWindow;
@@ -283,6 +329,7 @@ function createMainWindow() {
     mainWindow = null;
     tradingView = null;
     latestLayout = null;
+    tradingViewSuspended = false;
   });
   mainWindow.webContents.on("did-finish-load", () => {
     applyThemeAndWindowFlags();
@@ -298,10 +345,12 @@ function registerIpc() {
     return settings;
   });
   import_electron.ipcMain.handle("settings:update", (_event, patch) => {
+    const previousSiteUrl = settings.siteUrl;
     const next = {
       ...settings,
       theme: sanitizeTheme(patch.theme, settings.theme),
       alwaysOnTop: typeof patch.alwaysOnTop === "boolean" ? patch.alwaysOnTop : settings.alwaysOnTop,
+      siteUrl: sanitizeSiteUrl(patch.siteUrl, settings.siteUrl),
       cardWidth: safeNumber(patch.cardWidth, settings.cardWidth),
       cardHeight: safeNumber(patch.cardHeight, settings.cardHeight),
       windowWidth: safeNumber(patch.windowWidth, settings.windowWidth),
@@ -312,6 +361,9 @@ function registerIpc() {
       )
     };
     settings = sanitizeSettings(next);
+    if (settings.siteUrl !== previousSiteUrl) {
+      loadTradingViewTarget(settings.siteUrl);
+    }
     applyThemeAndWindowFlags();
     broadcastLayout();
     scheduleSettingsSave();
@@ -335,6 +387,10 @@ function registerIpc() {
       latestLayout = computeLayout(windowWidth);
     }
     return latestLayout;
+  });
+  import_electron.ipcMain.handle("trading-view:set-suspended", (_event, suspended) => {
+    tradingViewSuspended = Boolean(suspended);
+    broadcastLayout();
   });
   import_electron.ipcMain.handle(
     "window:set-width",
