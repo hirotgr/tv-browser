@@ -11,7 +11,7 @@
 - カード右下ハンドルでリサイズ
 - カードはウィンドウ右上基準で配置（ウィンドウが狭い場合は左にはみ出し許容）
 - ヘッダー右側に `HH:MM JST` 時計と操作 UI（`X+` / `X-` / `Right|Left` / `gear`）
-- `Settings` モーダルで `Theme` / `Always on Top` / `Site URL` を設定
+- `Settings` モーダルで `Theme` / `Site URL` を設定
 - テーマ、AoT、Site URL、カードサイズ、ウィンドウサイズ、幅変更起点を永続化
 - 外部リンクは `https:` のみ外部ブラウザで許可
 
@@ -208,15 +208,15 @@ interface AppSettings {
 - `X+` ボタン（幅 1920）
 - `X-` ボタン（幅 425）
 - `Right/Left` セレクト（幅変更起点）
+- `AoT` チェックボックス（Always on Top）
 - `gear` ボタン（Settings モーダルを開く）
 
 Settings モーダル:
 
 - `Theme` セレクト（Dark / Light）
-- `Always on Top` チェックボックス
 - `Site URL` テキスト入力（最大 64 文字）
 - `Cancel` / `Save` ボタン
-- Save 時に `Theme` / `Always on Top` / `Site URL` を一括反映
+- Save 時に `Theme` / `Site URL` を一括反映
 - `Site URL` は `https:` のみ許可（空文字、64文字超、非URL、`http:` はエラー）
 - モーダル表示中にウィンドウを閉じても、次回起動時はモーダル状態を持ち越さず通常表示で開始
 

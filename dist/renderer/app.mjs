@@ -167,6 +167,12 @@ function installEvents() {
     });
     applySettings(updated);
   });
+  alwaysOnTopToggle.addEventListener("change", async () => {
+    const updated = await window.desktopApi.updateSettings({
+      alwaysOnTop: alwaysOnTopToggle.checked
+    });
+    applySettings(updated);
+  });
   openSettingsButton.addEventListener("click", () => {
     if (!settingsDialog.open) {
       if (currentSettings) {
@@ -209,7 +215,6 @@ function installEvents() {
       const theme = themeSelect.value === "light" ? "light" : "dark";
       const updated = await window.desktopApi.updateSettings({
         theme,
-        alwaysOnTop: alwaysOnTopToggle.checked,
         siteUrl: siteUrlResult.value
       });
       applySettings(updated);
