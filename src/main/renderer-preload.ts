@@ -14,6 +14,7 @@ function subscribe<T>(channel: string, callback: (payload: T) => void): Unsubscr
 }
 
 contextBridge.exposeInMainWorld("desktopApi", {
+  createWindow: (): Promise<void> => ipcRenderer.invoke("window:create"),
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke("settings:get"),
   updateSettings: (patch: Partial<AppSettings>): Promise<AppSettings> =>
     ipcRenderer.invoke("settings:update", patch),

@@ -7,6 +7,7 @@ function mustQuery(selector) {
   return found;
 }
 var clockElement = mustQuery("#clock");
+var newWindowButton = mustQuery("#new-window-button");
 var expandWidthButton = mustQuery("#expand-width-button");
 var shrinkWidthButton = mustQuery("#shrink-width-button");
 var widthOriginSelect = mustQuery("#width-origin-select");
@@ -149,6 +150,9 @@ function endResize(event) {
   resizeHandle.releasePointerCapture(event.pointerId);
 }
 function installEvents() {
+  newWindowButton.addEventListener("click", () => {
+    void window.desktopApi.createWindow();
+  });
   expandWidthButton.addEventListener("click", () => {
     void window.desktopApi.setWindowWidth({
       width: 1920,

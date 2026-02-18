@@ -1,13 +1,17 @@
+import fs from "node:fs";
 import path from "node:path";
 import {
   app,
   BrowserWindow,
+  Menu,
   Rectangle,
   ipcMain,
   nativeTheme,
+  screen,
   shell,
   WebContentsView
 } from "electron";
+import type { IpcMainInvokeEvent, MenuItemConstructorOptions } from "electron";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings } from "./settings-store";
 import type {
   AppSettings,
@@ -22,6 +26,7 @@ const HEADER_HEIGHT = 38;
 const WINDOW_PADDING = 2;
 const CARD_PADDING = 8;
 const HANDLE_SIZE = 18;
+const NEW_WINDOW_OFFSET = 28;
 
 const MIN_CONTENT_WIDTH = 320;
 const MIN_CONTENT_HEIGHT = 220;
@@ -32,14 +37,33 @@ const MIN_WINDOW_HEIGHT = 640;
 
 const SAVE_DEBOUNCE_MS = 250;
 const MAX_SITE_URL_LENGTH = 64;
+const SETTINGS_FILE_NAME = "settings.json";
+const LEGACY_USER_DATA_DIR = "tv-watchlist";
 
-let mainWindow: BrowserWindow | null = null;
-let tradingView: WebContentsView | null = null;
+interface WindowLocalSettings {
+  alwaysOnTop: boolean;
+  cardWidth: number;
+  cardHeight: number;
+  windowWidth: number;
+  windowHeight: number;
+  windowX: number | null;
+  windowY: number | null;
+  widthResizeOrigin: WidthResizeOrigin;
+}
+
+interface WindowContext {
+  window: BrowserWindow;
+  tradingView: WebContentsView;
+  local: WindowLocalSettings;
+  latestLayout: LayoutMetrics | null;
+  tradingViewSuspended: boolean;
+}
+
 let settings: AppSettings = { ...DEFAULT_SETTINGS };
-let latestLayout: LayoutMetrics | null = null;
 let saveTimer: NodeJS.Timeout | null = null;
 let ipcRegistered = false;
-let tradingViewSuspended = false;
+const windowContexts = new Map<number, WindowContext>();
+let lastClosedLocalSnapshot: WindowLocalSettings | null = null;
 
 function safeNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -47,6 +71,14 @@ function safeNumber(value: unknown, fallback = 0): number {
 
 function sanitizeCoordinate(value: unknown): number {
   return Math.max(0, Math.round(safeNumber(value, 0)));
+}
+
+function sanitizeOptionalCoordinate(value: unknown, fallback: number | null): number | null {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+
+  return typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback;
 }
 
 function sanitizeTheme(value: unknown, fallback: ThemeMode): ThemeMode {
@@ -77,6 +109,27 @@ function sanitizeWidthResizeOrigin(
   return value === "left" || value === "right" ? value : fallback;
 }
 
+function migrateLegacySettingsIfNeeded(): void {
+  const userDataPath = app.getPath("userData");
+  const currentSettingsPath = path.join(userDataPath, SETTINGS_FILE_NAME);
+  if (fs.existsSync(currentSettingsPath)) {
+    return;
+  }
+
+  const legacyUserDataPath = path.join(path.dirname(userDataPath), LEGACY_USER_DATA_DIR);
+  const legacySettingsPath = path.join(legacyUserDataPath, SETTINGS_FILE_NAME);
+  if (!fs.existsSync(legacySettingsPath)) {
+    return;
+  }
+
+  try {
+    fs.mkdirSync(userDataPath, { recursive: true });
+    fs.copyFileSync(legacySettingsPath, currentSettingsPath);
+  } catch (error) {
+    console.error("Failed to migrate legacy settings:", error);
+  }
+}
+
 function sanitizeSettings(next: AppSettings): AppSettings {
   const base = {
     theme: sanitizeTheme(next.theme, DEFAULT_SETTINGS.theme),
@@ -86,6 +139,8 @@ function sanitizeSettings(next: AppSettings): AppSettings {
     cardHeight: sanitizeCoordinate(next.cardHeight),
     windowWidth: sanitizeCoordinate(next.windowWidth),
     windowHeight: sanitizeCoordinate(next.windowHeight),
+    windowX: sanitizeOptionalCoordinate(next.windowX, DEFAULT_SETTINGS.windowX),
+    windowY: sanitizeOptionalCoordinate(next.windowY, DEFAULT_SETTINGS.windowY),
     widthResizeOrigin: sanitizeWidthResizeOrigin(
       next.widthResizeOrigin,
       DEFAULT_SETTINGS.widthResizeOrigin
@@ -99,6 +154,71 @@ function sanitizeSettings(next: AppSettings): AppSettings {
     windowWidth: Math.max(MIN_WINDOW_WIDTH, base.windowWidth || DEFAULT_SETTINGS.windowWidth),
     windowHeight: Math.max(MIN_WINDOW_HEIGHT, base.windowHeight || DEFAULT_SETTINGS.windowHeight)
   };
+}
+
+function extractLocalSettings(source: AppSettings): WindowLocalSettings {
+  return {
+    alwaysOnTop: source.alwaysOnTop,
+    cardWidth: source.cardWidth,
+    cardHeight: source.cardHeight,
+    windowWidth: source.windowWidth,
+    windowHeight: source.windowHeight,
+    windowX: source.windowX,
+    windowY: source.windowY,
+    widthResizeOrigin: source.widthResizeOrigin
+  };
+}
+
+function sanitizeLocalSettings(next: WindowLocalSettings): WindowLocalSettings {
+  const base = {
+    alwaysOnTop: Boolean(next.alwaysOnTop),
+    cardWidth: sanitizeCoordinate(next.cardWidth),
+    cardHeight: sanitizeCoordinate(next.cardHeight),
+    windowWidth: sanitizeCoordinate(next.windowWidth),
+    windowHeight: sanitizeCoordinate(next.windowHeight),
+    windowX: sanitizeOptionalCoordinate(next.windowX, DEFAULT_SETTINGS.windowX),
+    windowY: sanitizeOptionalCoordinate(next.windowY, DEFAULT_SETTINGS.windowY),
+    widthResizeOrigin: sanitizeWidthResizeOrigin(next.widthResizeOrigin, DEFAULT_SETTINGS.widthResizeOrigin)
+  };
+
+  return {
+    ...base,
+    cardWidth: Math.max(MIN_CARD_WIDTH, base.cardWidth || DEFAULT_SETTINGS.cardWidth),
+    cardHeight: Math.max(MIN_CARD_HEIGHT, base.cardHeight || DEFAULT_SETTINGS.cardHeight),
+    windowWidth: Math.max(MIN_WINDOW_WIDTH, base.windowWidth || DEFAULT_SETTINGS.windowWidth),
+    windowHeight: Math.max(MIN_WINDOW_HEIGHT, base.windowHeight || DEFAULT_SETTINGS.windowHeight)
+  };
+}
+
+function sameLocalSettings(a: WindowLocalSettings, b: WindowLocalSettings): boolean {
+  return (
+    a.alwaysOnTop === b.alwaysOnTop &&
+    a.cardWidth === b.cardWidth &&
+    a.cardHeight === b.cardHeight &&
+    a.windowWidth === b.windowWidth &&
+    a.windowHeight === b.windowHeight &&
+    a.windowX === b.windowX &&
+    a.windowY === b.windowY &&
+    a.widthResizeOrigin === b.widthResizeOrigin
+  );
+}
+
+function mergeLocalSettingsIntoDefaults(
+  local: WindowLocalSettings,
+  options?: { includePosition?: boolean }
+): void {
+  const includePosition = options?.includePosition ?? true;
+  settings = sanitizeSettings({
+    ...settings,
+    alwaysOnTop: local.alwaysOnTop,
+    cardWidth: local.cardWidth,
+    cardHeight: local.cardHeight,
+    windowWidth: local.windowWidth,
+    windowHeight: local.windowHeight,
+    windowX: includePosition ? local.windowX : settings.windowX,
+    windowY: includePosition ? local.windowY : settings.windowY,
+    widthResizeOrigin: local.widthResizeOrigin
+  });
 }
 
 function flushSettings(): void {
@@ -121,29 +241,36 @@ function scheduleSettingsSave(): void {
   }, SAVE_DEBOUNCE_MS);
 }
 
-function computeLayout(windowWidth: number): LayoutMetrics {
-  const cardWidth = Math.max(MIN_CARD_WIDTH, settings.cardWidth);
-  const cardHeight = Math.max(MIN_CARD_HEIGHT, settings.cardHeight);
+function composeSettings(context: WindowContext): AppSettings {
+  return {
+    theme: settings.theme,
+    alwaysOnTop: context.local.alwaysOnTop,
+    siteUrl: settings.siteUrl,
+    cardWidth: context.local.cardWidth,
+    cardHeight: context.local.cardHeight,
+    windowWidth: context.local.windowWidth,
+    windowHeight: context.local.windowHeight,
+    windowX: context.local.windowX,
+    windowY: context.local.windowY,
+    widthResizeOrigin: context.local.widthResizeOrigin
+  };
+}
 
-  if (cardWidth !== settings.cardWidth || cardHeight !== settings.cardHeight) {
-    settings = { ...settings, cardWidth, cardHeight };
-    scheduleSettingsSave();
-  }
-
+function computeLayout(windowWidth: number, local: WindowLocalSettings): LayoutMetrics {
   const safeWindowWidth = Math.max(1, Math.round(windowWidth));
-  const cardX = safeWindowWidth - WINDOW_PADDING - cardWidth;
+  const cardX = safeWindowWidth - WINDOW_PADDING - local.cardWidth;
   const cardY = HEADER_HEIGHT + WINDOW_PADDING;
   const contentX = cardX + CARD_PADDING;
   const contentY = cardY + CARD_PADDING;
-  const contentWidth = Math.max(1, cardWidth - CARD_PADDING * 2);
-  const contentHeight = Math.max(1, cardHeight - CARD_PADDING * 2);
+  const contentWidth = Math.max(1, local.cardWidth - CARD_PADDING * 2);
+  const contentHeight = Math.max(1, local.cardHeight - CARD_PADDING * 2);
 
   return {
     headerHeight: HEADER_HEIGHT,
     cardX,
     cardY,
-    cardWidth,
-    cardHeight,
+    cardWidth: local.cardWidth,
+    cardHeight: local.cardHeight,
     contentX,
     contentY,
     contentWidth,
@@ -153,41 +280,49 @@ function computeLayout(windowWidth: number): LayoutMetrics {
   };
 }
 
-function broadcastLayout(): void {
-  if (!mainWindow || !tradingView) {
+function emitSettingsChanged(context: WindowContext): void {
+  if (!context.window.webContents.isDestroyed()) {
+    context.window.webContents.send("settings:changed", composeSettings(context));
+  }
+}
+
+function broadcastLayout(context: WindowContext): void {
+  if (context.window.isDestroyed() || context.tradingView.webContents.isDestroyed()) {
     return;
   }
 
-  const [windowWidth] = mainWindow.getContentSize();
-  latestLayout = computeLayout(windowWidth);
+  const [windowWidth] = context.window.getContentSize();
+  context.latestLayout = computeLayout(windowWidth, context.local);
 
-  if (tradingViewSuspended) {
-    tradingView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
+  if (context.tradingViewSuspended) {
+    context.tradingView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
   } else {
-    tradingView.setBounds({
-      x: latestLayout.contentX,
-      y: latestLayout.contentY,
-      width: latestLayout.contentWidth,
-      height: latestLayout.contentHeight
+    context.tradingView.setBounds({
+      x: context.latestLayout.contentX,
+      y: context.latestLayout.contentY,
+      width: context.latestLayout.contentWidth,
+      height: context.latestLayout.contentHeight
     });
   }
 
-  if (!mainWindow.webContents.isDestroyed()) {
-    mainWindow.webContents.send("layout:changed", latestLayout);
+  if (!context.window.webContents.isDestroyed()) {
+    context.window.webContents.send("layout:changed", context.latestLayout);
+  }
+}
+
+function applyWindowAppearance(context: WindowContext, emit = true): void {
+  context.window.setAlwaysOnTop(context.local.alwaysOnTop);
+  context.window.setBackgroundColor(settings.theme === "dark" ? "#0d1217" : "#edf3f7");
+
+  if (emit) {
+    emitSettingsChanged(context);
   }
 }
 
 function applyThemeAndWindowFlags(): void {
   nativeTheme.themeSource = settings.theme;
-  if (!mainWindow) {
-    return;
-  }
-
-  mainWindow.setAlwaysOnTop(settings.alwaysOnTop);
-  mainWindow.setBackgroundColor(settings.theme === "dark" ? "#0d1217" : "#edf3f7");
-
-  if (!mainWindow.webContents.isDestroyed()) {
-    mainWindow.webContents.send("settings:changed", settings);
+  for (const context of windowContexts.values()) {
+    applyWindowAppearance(context, true);
   }
 }
 
@@ -199,38 +334,150 @@ function isAllowedExternalUrl(rawUrl: string): boolean {
   }
 }
 
-function loadTradingViewTarget(url: string): void {
-  if (!tradingView) {
+function loadTradingViewTarget(context: WindowContext, url: string): void {
+  if (context.tradingView.webContents.isDestroyed()) {
     return;
   }
 
-  void tradingView.webContents.loadURL(url).catch((error: unknown) => {
+  void context.tradingView.webContents.loadURL(url).catch((error: unknown) => {
     console.error("Failed to load site URL:", error);
   });
 }
 
-function createMainWindow(): void {
-  tradingViewSuspended = false;
-  const initialWidth = Math.max(MIN_WINDOW_WIDTH, settings.windowWidth);
-  const initialHeight = Math.max(MIN_WINDOW_HEIGHT, settings.windowHeight);
+function loadTradingViewTargets(url: string): void {
+  for (const context of windowContexts.values()) {
+    loadTradingViewTarget(context, url);
+  }
+}
 
-  mainWindow = new BrowserWindow({
+function resolveWindowContext(event: IpcMainInvokeEvent): WindowContext | null {
+  const senderWindow = BrowserWindow.fromWebContents(event.sender);
+  if (!senderWindow) {
+    return null;
+  }
+  return windowContexts.get(senderWindow.id) ?? null;
+}
+
+function requireWindowContext(event: IpcMainInvokeEvent): WindowContext {
+  const context = resolveWindowContext(event);
+  if (!context) {
+    throw new Error("Window context is not available.");
+  }
+  return context;
+}
+
+function resolveSourceContext(sourceWindowId?: number): WindowContext | null {
+  if (typeof sourceWindowId === "number") {
+    return windowContexts.get(sourceWindowId) ?? null;
+  }
+
+  const focusedWindow = BrowserWindow.getFocusedWindow();
+  if (!focusedWindow) {
+    return null;
+  }
+  return windowContexts.get(focusedWindow.id) ?? null;
+}
+
+function updateWindowSizeInLocalSettings(context: WindowContext): void {
+  if (context.window.isDestroyed()) {
+    return;
+  }
+
+  const [windowWidth, windowHeight] = context.window.getContentSize();
+  context.local = sanitizeLocalSettings({
+    ...context.local,
+    windowWidth,
+    windowHeight
+  });
+}
+
+function updateWindowPositionInLocalSettings(context: WindowContext): void {
+  if (context.window.isDestroyed()) {
+    return;
+  }
+
+  const { x, y } = context.window.getBounds();
+  context.local = sanitizeLocalSettings({
+    ...context.local,
+    windowX: x,
+    windowY: y
+  });
+}
+
+function captureWindowSnapshot(context: WindowContext): void {
+  try {
+    updateWindowSizeInLocalSettings(context);
+    updateWindowPositionInLocalSettings(context);
+    lastClosedLocalSnapshot = { ...context.local };
+  } catch (error) {
+    console.error("Failed to capture window snapshot:", error);
+  }
+}
+
+function clampBoundsToDisplayWorkArea(bounds: Rectangle): Rectangle {
+  const display = screen.getDisplayMatching(bounds);
+  const { x, y, width, height } = display.workArea;
+
+  const maxX = x + Math.max(0, width - bounds.width);
+  const maxY = y + Math.max(0, height - bounds.height);
+
+  return {
+    x: Math.round(Math.min(Math.max(bounds.x, x), maxX)),
+    y: Math.round(Math.min(Math.max(bounds.y, y), maxY)),
+    width: bounds.width,
+    height: bounds.height
+  };
+}
+
+function createAppWindow(sourceWindowId?: number): BrowserWindow {
+  const sourceContext = resolveSourceContext(sourceWindowId);
+
+  let local = sanitizeLocalSettings(sourceContext ? sourceContext.local : extractLocalSettings(settings));
+
+  if (sourceContext && !sourceContext.window.isDestroyed()) {
+    const [sourceWidth, sourceHeight] = sourceContext.window.getContentSize();
+    local = sanitizeLocalSettings({
+      ...local,
+      windowWidth: sourceWidth,
+      windowHeight: sourceHeight
+    });
+  }
+
+  const windowOptions: Electron.BrowserWindowConstructorOptions = {
     useContentSize: true,
-    width: initialWidth,
-    height: initialHeight,
+    width: local.windowWidth,
+    height: local.windowHeight,
     minWidth: MIN_WINDOW_WIDTH,
     minHeight: MIN_WINDOW_HEIGHT,
     autoHideMenuBar: true,
     title: "TV Browser",
-    backgroundColor: "#0d1217",
+    alwaysOnTop: local.alwaysOnTop,
+    backgroundColor: settings.theme === "dark" ? "#0d1217" : "#edf3f7",
     webPreferences: {
       preload: path.join(__dirname, "renderer-preload.js"),
       contextIsolation: true,
       sandbox: false
     }
-  });
+  };
 
-  tradingView = new WebContentsView({
+  if (sourceContext && !sourceContext.window.isDestroyed()) {
+    const sourceBounds = sourceContext.window.getBounds();
+    windowOptions.x = sourceBounds.x + NEW_WINDOW_OFFSET;
+    windowOptions.y = sourceBounds.y + NEW_WINDOW_OFFSET;
+  } else if (local.windowX !== null && local.windowY !== null) {
+    const clamped = clampBoundsToDisplayWorkArea({
+      x: local.windowX,
+      y: local.windowY,
+      width: local.windowWidth,
+      height: local.windowHeight
+    });
+    windowOptions.x = clamped.x;
+    windowOptions.y = clamped.y;
+  }
+
+  const windowRef = new BrowserWindow(windowOptions);
+
+  const tradingView = new WebContentsView({
     webPreferences: {
       contextIsolation: true,
       sandbox: true,
@@ -238,7 +485,16 @@ function createMainWindow(): void {
     }
   });
 
-  mainWindow.contentView.addChildView(tradingView);
+  const context: WindowContext = {
+    window: windowRef,
+    tradingView,
+    local,
+    latestLayout: null,
+    tradingViewSuspended: false
+  };
+
+  windowContexts.set(windowRef.id, context);
+  windowRef.contentView.addChildView(tradingView);
 
   tradingView.webContents.setWindowOpenHandler(({ url }) => {
     if (isAllowedExternalUrl(url)) {
@@ -247,51 +503,70 @@ function createMainWindow(): void {
     return { action: "deny" };
   });
 
-  loadTradingViewTarget(settings.siteUrl);
-  void mainWindow.loadFile(path.join(__dirname, "../renderer/index.html"));
+  loadTradingViewTarget(context, settings.siteUrl);
+  void windowRef.loadFile(path.join(__dirname, "../renderer/index.html"));
 
-  mainWindow.on("resize", () => {
-    const windowRef = mainWindow;
-    if (!windowRef) {
-      return;
-    }
-
-    const [windowWidth, windowHeight] = windowRef.getContentSize();
-    settings = {
-      ...settings,
-      windowWidth,
-      windowHeight
-    };
+  windowRef.on("resize", () => {
+    updateWindowSizeInLocalSettings(context);
+    mergeLocalSettingsIntoDefaults(context.local, { includePosition: false });
     scheduleSettingsSave();
-    broadcastLayout();
+    broadcastLayout(context);
   });
 
-  mainWindow.on("close", () => {
-    const windowRef = mainWindow;
-    if (!windowRef) {
-      return;
+  windowRef.on("move", () => {
+    updateWindowPositionInLocalSettings(context);
+  });
+
+  windowRef.on("moved", () => {
+    updateWindowPositionInLocalSettings(context);
+  });
+
+  windowRef.on("close", () => {
+    captureWindowSnapshot(context);
+  });
+
+  windowRef.on("closed", () => {
+    lastClosedLocalSnapshot = { ...context.local };
+    windowContexts.delete(windowRef.id);
+  });
+
+  windowRef.webContents.on("did-finish-load", () => {
+    applyWindowAppearance(context, true);
+    broadcastLayout(context);
+  });
+
+  return windowRef;
+}
+
+function createApplicationMenu(): void {
+  const newWindowMenuItem: MenuItemConstructorOptions = {
+    label: "New Window",
+    accelerator: process.platform === "darwin" ? "Command+N" : "CommandOrControl+N",
+    click: () => {
+      const focusedWindow = BrowserWindow.getFocusedWindow();
+      createAppWindow(focusedWindow?.id);
     }
+  };
 
-    const [windowWidth, windowHeight] = windowRef.getContentSize();
-    settings = {
-      ...settings,
-      windowWidth,
-      windowHeight
-    };
-    flushSettings();
-  });
+  const template: MenuItemConstructorOptions[] =
+    process.platform === "darwin"
+      ? [
+          { role: "appMenu" },
+          {
+            label: "File",
+            submenu: [newWindowMenuItem, { type: "separator" }, { role: "close" }]
+          },
+          { role: "editMenu" },
+          { role: "windowMenu" }
+        ]
+      : [
+          {
+            label: "File",
+            submenu: [newWindowMenuItem, { type: "separator" }, { role: "quit" }]
+          }
+        ];
 
-  mainWindow.on("closed", () => {
-    mainWindow = null;
-    tradingView = null;
-    latestLayout = null;
-    tradingViewSuspended = false;
-  });
-
-  mainWindow.webContents.on("did-finish-load", () => {
-    applyThemeAndWindowFlags();
-    broadcastLayout();
-  });
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 function registerIpc(): void {
@@ -300,75 +575,133 @@ function registerIpc(): void {
   }
   ipcRegistered = true;
 
-  ipcMain.handle("settings:get", () => {
-    return settings;
+  ipcMain.handle("window:create", (event) => {
+    const source = resolveWindowContext(event);
+    createAppWindow(source?.window.id);
   });
 
-  ipcMain.handle("settings:update", (_event, patch: Partial<AppSettings>) => {
+  ipcMain.handle("settings:get", (event) => {
+    const context = requireWindowContext(event);
+    return composeSettings(context);
+  });
+
+  ipcMain.handle("settings:update", (event, patch: Partial<AppSettings>) => {
+    const context = requireWindowContext(event);
+
+    const nextTheme = sanitizeTheme(patch.theme, settings.theme);
+    const nextSiteUrl = sanitizeSiteUrl(patch.siteUrl, settings.siteUrl);
+
+    let globalChanged = false;
+    if (nextTheme !== settings.theme) {
+      settings = { ...settings, theme: nextTheme };
+      globalChanged = true;
+    }
+
     const previousSiteUrl = settings.siteUrl;
-    const next: AppSettings = {
-      ...settings,
-      theme: sanitizeTheme(patch.theme, settings.theme),
-      alwaysOnTop: typeof patch.alwaysOnTop === "boolean" ? patch.alwaysOnTop : settings.alwaysOnTop,
-      siteUrl: sanitizeSiteUrl(patch.siteUrl, settings.siteUrl),
-      cardWidth: safeNumber(patch.cardWidth, settings.cardWidth),
-      cardHeight: safeNumber(patch.cardHeight, settings.cardHeight),
-      windowWidth: safeNumber(patch.windowWidth, settings.windowWidth),
-      windowHeight: safeNumber(patch.windowHeight, settings.windowHeight),
-      widthResizeOrigin: sanitizeWidthResizeOrigin(
-        patch.widthResizeOrigin,
-        settings.widthResizeOrigin
-      )
-    };
+    if (nextSiteUrl !== settings.siteUrl) {
+      settings = { ...settings, siteUrl: nextSiteUrl };
+      globalChanged = true;
+    }
 
-    settings = sanitizeSettings(next);
+    const localPatchProvided =
+      typeof patch.alwaysOnTop === "boolean" ||
+      patch.cardWidth !== undefined ||
+      patch.cardHeight !== undefined ||
+      patch.windowWidth !== undefined ||
+      patch.windowHeight !== undefined ||
+      patch.windowX !== undefined ||
+      patch.windowY !== undefined ||
+      patch.widthResizeOrigin !== undefined;
+
+    let localChanged = false;
+    if (localPatchProvided) {
+      const nextLocal = sanitizeLocalSettings({
+        alwaysOnTop:
+          typeof patch.alwaysOnTop === "boolean" ? patch.alwaysOnTop : context.local.alwaysOnTop,
+        cardWidth: safeNumber(patch.cardWidth, context.local.cardWidth),
+        cardHeight: safeNumber(patch.cardHeight, context.local.cardHeight),
+        windowWidth: safeNumber(patch.windowWidth, context.local.windowWidth),
+        windowHeight: safeNumber(patch.windowHeight, context.local.windowHeight),
+        windowX: sanitizeOptionalCoordinate(patch.windowX, context.local.windowX),
+        windowY: sanitizeOptionalCoordinate(patch.windowY, context.local.windowY),
+        widthResizeOrigin: sanitizeWidthResizeOrigin(
+          patch.widthResizeOrigin,
+          context.local.widthResizeOrigin
+        )
+      });
+
+      if (!sameLocalSettings(nextLocal, context.local)) {
+        context.local = nextLocal;
+        localChanged = true;
+      }
+    }
+
+    if (localChanged) {
+      mergeLocalSettingsIntoDefaults(context.local, { includePosition: false });
+      broadcastLayout(context);
+    }
+
     if (settings.siteUrl !== previousSiteUrl) {
-      loadTradingViewTarget(settings.siteUrl);
+      loadTradingViewTargets(settings.siteUrl);
     }
-    applyThemeAndWindowFlags();
-    broadcastLayout();
-    scheduleSettingsSave();
-    return settings;
+
+    if (globalChanged) {
+      applyThemeAndWindowFlags();
+    } else if (localChanged) {
+      applyWindowAppearance(context, true);
+    }
+
+    if (globalChanged || localChanged) {
+      scheduleSettingsSave();
+    }
+
+    return composeSettings(context);
   });
 
-  ipcMain.handle("card:resize", (_event, payload: { width: number; height: number }) => {
-    const width = safeNumber(payload?.width, settings.cardWidth);
-    const height = safeNumber(payload?.height, settings.cardHeight);
-    settings = sanitizeSettings({
-      ...settings,
-      cardWidth: width,
-      cardHeight: height
+  ipcMain.handle("card:resize", (event, payload: { width: number; height: number }) => {
+    const context = requireWindowContext(event);
+
+    const nextLocal = sanitizeLocalSettings({
+      ...context.local,
+      cardWidth: safeNumber(payload?.width, context.local.cardWidth),
+      cardHeight: safeNumber(payload?.height, context.local.cardHeight)
     });
-    broadcastLayout();
-    scheduleSettingsSave();
-    return settings;
-  });
 
-  ipcMain.handle("layout:get", () => {
-    if (!latestLayout && mainWindow) {
-      const [windowWidth] = mainWindow.getContentSize();
-      latestLayout = computeLayout(windowWidth);
+    if (!sameLocalSettings(nextLocal, context.local)) {
+      context.local = nextLocal;
+      mergeLocalSettingsIntoDefaults(context.local, { includePosition: false });
+      scheduleSettingsSave();
+      broadcastLayout(context);
     }
-    return latestLayout;
+
+    return composeSettings(context);
   });
 
-  ipcMain.handle("trading-view:set-suspended", (_event, suspended: boolean) => {
-    tradingViewSuspended = Boolean(suspended);
-    broadcastLayout();
+  ipcMain.handle("layout:get", (event) => {
+    const context = requireWindowContext(event);
+    if (!context.latestLayout) {
+      const [windowWidth] = context.window.getContentSize();
+      context.latestLayout = computeLayout(windowWidth, context.local);
+    }
+    return context.latestLayout;
+  });
+
+  ipcMain.handle("trading-view:set-suspended", (event, suspended: boolean) => {
+    const context = requireWindowContext(event);
+    context.tradingViewSuspended = Boolean(suspended);
+    broadcastLayout(context);
   });
 
   ipcMain.handle(
     "window:set-width",
-    (_event, payload: { width: number; origin: WidthResizeOrigin }) => {
-      if (!mainWindow) {
-        throw new Error("Main window is not available.");
-      }
+    (event, payload: { width: number; origin: WidthResizeOrigin }) => {
+      const context = requireWindowContext(event);
 
       const requestedWidth = Math.round(safeNumber(payload?.width, 0));
-      const origin = sanitizeWidthResizeOrigin(payload?.origin, settings.widthResizeOrigin);
-      const [minimumWidth] = mainWindow.getMinimumSize();
+      const origin = sanitizeWidthResizeOrigin(payload?.origin, context.local.widthResizeOrigin);
+      const [minimumWidth] = context.window.getMinimumSize();
       const targetWidth = Math.max(minimumWidth, requestedWidth);
-      const currentBounds = mainWindow.getContentBounds();
+      const currentBounds = context.window.getContentBounds();
       const nextX =
         origin === "left"
           ? currentBounds.x + currentBounds.width - targetWidth
@@ -380,17 +713,20 @@ function registerIpc(): void {
         width: targetWidth,
         height: currentBounds.height
       };
-      mainWindow.setContentBounds(nextBounds);
+      context.window.setContentBounds(nextBounds);
 
-      const [appliedWidth, appliedHeight] = mainWindow.getContentSize();
-      settings = {
-        ...settings,
+      const [appliedWidth, appliedHeight] = context.window.getContentSize();
+      context.local = sanitizeLocalSettings({
+        ...context.local,
         windowWidth: appliedWidth,
         windowHeight: appliedHeight,
         widthResizeOrigin: origin
-      };
+      });
+
+      mergeLocalSettingsIntoDefaults(context.local, { includePosition: false });
       scheduleSettingsSave();
-      broadcastLayout();
+      broadcastLayout(context);
+      emitSettingsChanged(context);
 
       return { width: appliedWidth, height: appliedHeight };
     }
@@ -398,24 +734,28 @@ function registerIpc(): void {
 }
 
 void app.whenReady().then(() => {
+  migrateLegacySettingsIfNeeded();
   settings = sanitizeSettings(loadSettings(app.getPath("userData")));
+  nativeTheme.themeSource = settings.theme;
+
   registerIpc();
-  createMainWindow();
-  applyThemeAndWindowFlags();
+  createApplicationMenu();
+  createAppWindow();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createMainWindow();
-      applyThemeAndWindowFlags();
+      createAppWindow();
     }
   });
 });
 
-app.on("before-quit", () => {
-  flushSettings();
-});
-
 app.on("window-all-closed", () => {
+  if (lastClosedLocalSnapshot) {
+    mergeLocalSettingsIntoDefaults(lastClosedLocalSnapshot, { includePosition: true });
+    flushSettings();
+  }
+  lastClosedLocalSnapshot = null;
+
   if (process.platform !== "darwin") {
     app.quit();
   }

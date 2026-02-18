@@ -12,6 +12,7 @@ function subscribe(channel, callback) {
   };
 }
 import_electron.contextBridge.exposeInMainWorld("desktopApi", {
+  createWindow: () => import_electron.ipcRenderer.invoke("window:create"),
   getSettings: () => import_electron.ipcRenderer.invoke("settings:get"),
   updateSettings: (patch) => import_electron.ipcRenderer.invoke("settings:update", patch),
   resizeCard: (size) => import_electron.ipcRenderer.invoke("card:resize", size),

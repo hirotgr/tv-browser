@@ -13,11 +13,21 @@ export const DEFAULT_SETTINGS: AppSettings = {
   cardHeight: 680,
   windowWidth: 1320,
   windowHeight: 920,
+  windowX: null,
+  windowY: null,
   widthResizeOrigin: "right"
 };
 
 function asFiniteNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function asNullableCoordinate(value: unknown, fallback: number | null): number | null {
+  if (value === null || value === undefined) {
+    return fallback;
+  }
+
+  return typeof value === "number" && Number.isFinite(value) ? Math.round(value) : fallback;
 }
 
 function asBoolean(value: unknown, fallback: boolean): boolean {
@@ -61,6 +71,8 @@ function sanitize(raw: Partial<AppSettings>): AppSettings {
     cardHeight: asFiniteNumber(raw.cardHeight, DEFAULT_SETTINGS.cardHeight),
     windowWidth: asFiniteNumber(raw.windowWidth, DEFAULT_SETTINGS.windowWidth),
     windowHeight: asFiniteNumber(raw.windowHeight, DEFAULT_SETTINGS.windowHeight),
+    windowX: asNullableCoordinate(raw.windowX, DEFAULT_SETTINGS.windowX),
+    windowY: asNullableCoordinate(raw.windowY, DEFAULT_SETTINGS.windowY),
     widthResizeOrigin: asWidthResizeOrigin(raw.widthResizeOrigin, DEFAULT_SETTINGS.widthResizeOrigin)
   };
 }

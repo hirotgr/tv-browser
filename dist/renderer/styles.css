@@ -73,6 +73,7 @@ body {
 }
 
 #width-controls button,
+#new-window-button,
 #open-settings-button,
 .settings-actions button {
   min-height: 30px;
@@ -93,14 +94,25 @@ body {
   background: color-mix(in srgb, var(--surface) 65%, transparent);
 }
 
+#new-window-button,
 #open-settings-button {
   width: 30px;
   min-width: 30px;
-  font-size: 15px;
   padding: 0;
   line-height: 1;
 }
 
+#new-window-button {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+}
+
+#open-settings-button {
+  font-size: 15px;
+}
+
+#new-window-button:hover,
 #open-settings-button:hover,
 .settings-actions button:hover {
   color: var(--text);

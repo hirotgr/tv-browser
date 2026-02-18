@@ -9,6 +9,7 @@ function mustQuery<TElement extends Element>(selector: string): TElement {
 }
 
 const clockElement = mustQuery<HTMLSpanElement>("#clock");
+const newWindowButton = mustQuery<HTMLButtonElement>("#new-window-button");
 const expandWidthButton = mustQuery<HTMLButtonElement>("#expand-width-button");
 const shrinkWidthButton = mustQuery<HTMLButtonElement>("#shrink-width-button");
 const widthOriginSelect = mustQuery<HTMLSelectElement>("#width-origin-select");
@@ -185,6 +186,10 @@ function endResize(event: PointerEvent): void {
 }
 
 function installEvents(): void {
+  newWindowButton.addEventListener("click", () => {
+    void window.desktopApi.createWindow();
+  });
+
   expandWidthButton.addEventListener("click", () => {
     void window.desktopApi.setWindowWidth({
       width: 1920,

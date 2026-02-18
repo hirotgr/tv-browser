@@ -9,6 +9,8 @@ export interface AppSettings {
   cardHeight: number;
   windowWidth: number;
   windowHeight: number;
+  windowX: number | null;
+  windowY: number | null;
   widthResizeOrigin: WidthResizeOrigin;
 }
 

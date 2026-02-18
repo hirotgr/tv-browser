@@ -1,6 +1,7 @@
 import type { AppSettings, LayoutMetrics, WidthResizeOrigin } from "../shared/types";
 
 interface DesktopApi {
+  createWindow(): Promise<void>;
   getSettings(): Promise<AppSettings>;
   updateSettings(patch: Partial<AppSettings>): Promise<AppSettings>;
   resizeCard(size: { width: number; height: number }): Promise<AppSettings>;
