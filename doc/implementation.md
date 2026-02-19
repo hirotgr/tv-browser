@@ -11,10 +11,10 @@
 - `N` ボタン / `Cmd+N` で新規ウィンドウを追加
 - カード右下ハンドルでリサイズ
 - カードはウィンドウ右上基準で配置（ウィンドウが狭い場合は左にはみ出し許容）
-- ヘッダー右側に `HH:MM JST` 時計と操作 UI（`N` / `X+` / `X-` / `Right|Left` / `AoT` / `gear`）
-- `Settings` モーダルで `Theme` / `Site URL` を設定
+- ヘッダー右側に `HH:MM JST` 時計と操作 UI（`C` / `N` / `X+` / `X-` / `Right|Left` / `AoT` / `gear`）
+- `Settings` モーダルで `Theme` / `Site URL` / 定期スクリーンショット設定を管理
 - 全ウィンドウで `persist:tradingview` を共有し Cookie / ストレージ / ログイン状態を共有
-- `Theme` / `Site URL` は全ウィンドウ共通、`AoT` / `Display Mode` / 幅サイズ操作はウィンドウローカル
+- `Theme` / `Site URL` / キャプチャ設定は全ウィンドウ共通、`AoT` / `Display Mode` / 幅サイズ操作はウィンドウローカル
 - 設定値は永続化され、次回起動時の初期値として復元
 - 終了時の最後に閉じたウィンドウの `x/y` 座標を保存し、起動時は画面外をクランプして復元
 - 外部リンクは `https:` のみ外部ブラウザで許可
@@ -41,16 +41,16 @@
 ```text
 src/
   main/
-    main.ts                # メインプロセス（BrowserWindow / WebContentsView / IPC / レイアウト）
+    main.ts                # メインプロセス（BrowserWindow / WebContentsView / IPC / レイアウト / 定期キャプチャ）
     renderer-preload.ts    # Renderer 向け contextBridge API
     settings-store.ts      # settings.json の読み書き
   renderer/
     index.html             # UI 構造
-    app.ts                 # UI ロジック（時計、設定操作、カードリサイズ）
+    app.ts                 # UI ロジック（時計、設定操作、キャプチャ操作、カードリサイズ）
     styles.css             # 見た目
     global.d.ts            # window.desktopApi 型
   shared/
-    types.ts               # 共有型（AppSettings / LayoutMetrics など）
+    types.ts               # 共有型（AppSettings / LayoutMetrics / CaptureState など）
 
 dist/
   main/                    # main, preload のビルド成果物
@@ -75,6 +75,7 @@ release/
 - レイアウト計算と反映
 - IPC ハンドラ提供
 - 設定永続化（デバウンス + flush）
+- 定期スクリーンショットの単一ウィンドウ実行制御
 
 ウィンドウ生成の要点:
 
@@ -97,7 +98,7 @@ TradingView View の要点:
 責務:
 
 - 時計表示（`HH:MM JST`）
-- UI操作（幅変更、起点切替、Settings モーダル）
+- UI操作（キャプチャ制御、幅変更、起点切替、Settings モーダル）
 - カードリサイズ操作
 - メインから通知された `LayoutMetrics` の反映
 
@@ -153,6 +154,9 @@ interface AppSettings {
   windowX: number | null;
   windowY: number | null;
   widthResizeOrigin: "right" | "left";
+  captureIntervalMin: 1 | 5 | 15 | 30 | 60 | 240;
+  captureFileName: string;
+  captureDirectory: string;
 }
 ```
 
@@ -173,6 +177,9 @@ interface AppSettings {
   - `windowX: null`
   - `windowY: null`
   - `widthResizeOrigin: "right"`
+  - `captureIntervalMin: 5`
+  - `captureFileName: "capture"`
+  - `captureDirectory: ~/Downloads` 相当の絶対パス
 
 ### 6.3 保存タイミング
 
@@ -183,7 +190,7 @@ interface AppSettings {
 
 ### 6.4 マルチウィンドウ時の適用範囲
 
-- 全ウィンドウ共通: `theme`, `siteUrl`
+- 全ウィンドウ共通: `theme`, `siteUrl`, `captureIntervalMin`, `captureFileName`, `captureDirectory`
 - ウィンドウローカル（実行中）: `alwaysOnTop`, `widthResizeOrigin`, `windowWidth/windowHeight`, `windowX/windowY`, `cardWidth/cardHeight`
 - ローカル値も `settings.json` には 1 セット保存され、次回起動時の初期値として使われる
 - `windowX/windowY` が画面外でも、起動時に `screen.workArea` 内へクランプして表示する
@@ -200,14 +207,19 @@ interface AppSettings {
 
 `window.desktopApi`:
 
+- `getWindowId(): Promise<number>`
 - `getSettings(): Promise<AppSettings>`
 - `updateSettings(patch: Partial<AppSettings>): Promise<AppSettings>`
 - `resizeCard(size: { width: number; height: number }): Promise<AppSettings>`
 - `getLayout(): Promise<LayoutMetrics | null>`
 - `setWindowWidth(payload: { width: number; origin: "right" | "left" }): Promise<{ width: number; height: number }>`
+- `pickCaptureDirectory(): Promise<string | null>`
+- `togglePeriodicCapture(): Promise<{ status: "started" | "stopped" | "blocked"; reason?: "another-window" }>`
+- `getCaptureState(): Promise<{ activeWindowId: number | null }>`
 - `createWindow(): Promise<void>`
 - `onLayoutChanged(callback)`
 - `onSettingsChanged(callback)`
+- `onCaptureStateChanged(callback)`
 
 ### 7.2 幅変更の起点
 
@@ -218,6 +230,16 @@ interface AppSettings {
 
 `X+` は `1920`、`X-` は `425` を指定して呼び出します。
 
+### 7.3 定期キャプチャ IPC
+
+- `capture:toggle`:
+  - 未実行状態なら呼び出し元ウィンドウで開始
+  - 同一ウィンドウで実行中なら停止
+  - 別ウィンドウで実行中なら `{ status: "blocked", reason: "another-window" }`
+- `capture:state:get`: 現在の `{ activeWindowId }` を取得
+- `capture:state:changed`: 状態変更時に全Rendererへ push
+- `capture:directory:pick`: `dialog.showOpenDialog` で保存先ディレクトリを選択
+
 ---
 
 ## 8. UI仕様（現行実装）
@@ -225,6 +247,7 @@ interface AppSettings {
 上部右寄せコントロール:
 
 - `HH:MM JST` 時計
+- `C` ボタン（Periodic Screen Capture）
 - `N` ボタン（新規ウィンドウ）
 - `X+` ボタン（幅 1920）
 - `X-` ボタン（幅 425）
@@ -236,9 +259,14 @@ Settings モーダル:
 
 - `Theme` セレクト（Dark / Light）
 - `Site URL` テキスト入力（最大 64 文字）
+- `Capturing Interval (min)` ラジオ（`1` / `5` / `15` / `30` / `60` / `240`）
+- `File Name`（入力値の末尾 `.png` は除去して保存、UI右側に固定 `.png` 表示）
+- `Download to`（ディレクトリ入力 + `Browse...` で選択）
 - `Cancel` / `Save` ボタン
-- Save 時に `Theme` / `Site URL` を一括反映
+- Save 時に `Theme` / `Site URL` / キャプチャ設定を一括反映
 - `Site URL` は `https:` のみ許可（空文字、64文字超、非URL、`http:` はエラー）
+- `File Name` は空文字と禁止文字を拒否
+- `Download to` は存在するディレクトリのみ許可
 - モーダル表示中にウィンドウを閉じても、次回起動時はモーダル状態を持ち越さず通常表示で開始
 
 時計:
@@ -250,6 +278,18 @@ Settings モーダル:
 
 - 右下ハンドルのポインタイベントでサイズ変更
 - リサイズ要求はキュー化し、過剰 IPC を抑制
+
+定期キャプチャ:
+
+- `C` ボタン押下で定期キャプチャ開始、再押下で停止
+- `C` の active 状態は `aria-pressed="true"` + 反転スタイルで表示
+- 他ウィンドウが active の場合は開始を拒否し、`Capturing on another window` tooltip を約2秒表示
+- 初回取得時刻は「次の区切り時刻 + 5秒」
+- 以降も毎回 one-shot timer で次時刻を再計算し、drift を抑制
+- 保存先は `${captureDirectory}/${captureFileName}.png` で常に上書き
+- Settings モーダル表示中は active ウィンドウのみ一時停止し、閉じたら次の区切り + 5秒で再開
+- ウィンドウが最小化状態、または完全オクルージョン（ウィンドウ全体が他アプリのウィンドウに隠れている状態）の場合、コンテンツ表示は更新されないため、取得できる画像は最小化または完全オクルージョンされた時点の内容となる
+- 正しい内容でスクリーンショットを取得するためには、`Always on Top` を有効化するか、スクリーンショット取得を有効化したウィンドウの一部を常にディスプレイ上に表示しておく必要がある
 
 ---
 

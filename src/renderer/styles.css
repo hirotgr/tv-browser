@@ -56,6 +56,7 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
+  position: relative;
 }
 
 #clock {
@@ -73,6 +74,7 @@ body {
 }
 
 #width-controls button,
+#periodic-capture-button,
 #new-window-button,
 #open-settings-button,
 .settings-actions button {
@@ -95,6 +97,7 @@ body {
 }
 
 #new-window-button,
+#periodic-capture-button,
 #open-settings-button {
   width: 30px;
   min-width: 30px;
@@ -108,16 +111,51 @@ body {
   letter-spacing: 0.03em;
 }
 
+#periodic-capture-button {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
 #open-settings-button {
   font-size: 15px;
 }
 
 #new-window-button:hover,
+#periodic-capture-button:hover,
 #open-settings-button:hover,
 .settings-actions button:hover {
   color: var(--text);
   border-color: var(--accent);
   background: color-mix(in srgb, var(--surface) 65%, transparent);
+}
+
+#periodic-capture-button[aria-pressed="true"] {
+  background: color-mix(in srgb, var(--text) 85%, #000 15%);
+  color: color-mix(in srgb, var(--surface) 92%, #000 8%);
+  border-color: color-mix(in srgb, var(--text) 82%, #000 18%);
+}
+
+#capture-blocked-tooltip {
+  position: absolute;
+  right: 188px;
+  top: 34px;
+  max-width: 240px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 4px 8px;
+  font-size: 11px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--surface) 92%, #000 8%);
+  opacity: 0;
+  transform: translateY(-2px);
+  pointer-events: none;
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+#capture-blocked-tooltip[data-visible="true"] {
+  opacity: 1;
+  transform: translateY(0);
 }
 
 .panel-item {
@@ -193,6 +231,9 @@ body {
   gap: 5px;
   font-size: 12px;
   color: var(--muted);
+  border: 0;
+  margin: 0;
+  padding: 0;
 }
 
 .settings-field input[type="checkbox"] {
@@ -200,6 +241,74 @@ body {
   accent-color: var(--accent);
 }
 
+#capture-interval-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+#capture-interval-fieldset {
+  margin-top: 28px;
+}
+
+#capture-interval-options label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+#capture-interval-options input[type="radio"] {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.file-name-row,
+.download-directory-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.file-name-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.file-name-suffix {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 2px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
+.download-directory-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+#capture-directory-browse-button {
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1;
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background-color 120ms ease;
+}
+
+#capture-directory-browse-button:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--surface) 65%, transparent);
+}
+
+#capture-file-name-error,
+#capture-directory-error,
 #site-url-error {
   margin: 0;
   min-height: 16px;
@@ -207,8 +316,22 @@ body {
   color: #f58f8f;
 }
 
+#capture-directory-error:empty::before,
 #site-url-error:empty::before {
   content: "\00a0";
+}
+
+#capture-file-name-error {
+  display: none;
+  min-height: 0;
+}
+
+#capture-file-name-error:not(:empty) {
+  display: block;
+}
+
+#capture-file-name-error:empty::before {
+  content: none;
 }
 
 .settings-actions {

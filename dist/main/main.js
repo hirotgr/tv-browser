@@ -29,9 +29,13 @@ var import_electron = require("electron");
 
 // src/main/settings-store.ts
 var import_node_fs = __toESM(require("fs"));
+var import_node_os = __toESM(require("os"));
 var import_node_path = __toESM(require("path"));
 var SETTINGS_FILE_NAME = "settings.json";
 var MAX_SITE_URL_LENGTH = 64;
+var CAPTURE_INTERVAL_VALUES = [1, 5, 15, 30, 60, 240];
+var INVALID_CAPTURE_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001f]/;
+var DEFAULT_CAPTURE_DIRECTORY = import_node_path.default.join(import_node_os.default.homedir(), "Downloads");
 var DEFAULT_SETTINGS = {
   theme: "dark",
   alwaysOnTop: false,
@@ -42,7 +46,10 @@ var DEFAULT_SETTINGS = {
   windowHeight: 920,
   windowX: null,
   windowY: null,
-  widthResizeOrigin: "right"
+  widthResizeOrigin: "right",
+  captureIntervalMin: 5,
+  captureFileName: "capture",
+  captureDirectory: DEFAULT_CAPTURE_DIRECTORY
 };
 function asFiniteNumber(value, fallback) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -61,6 +68,40 @@ function asTheme(value, fallback) {
 }
 function asWidthResizeOrigin(value, fallback) {
   return value === "right" || value === "left" ? value : fallback;
+}
+function asCaptureIntervalMin(value, fallback) {
+  return CAPTURE_INTERVAL_VALUES.includes(value) ? value : fallback;
+}
+function normalizeCaptureFileName(value) {
+  return value.trim().replace(/(?:\.png)+$/i, "").trim();
+}
+function asCaptureFileName(value, fallback) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const normalized = normalizeCaptureFileName(value);
+  if (normalized.length === 0 || INVALID_CAPTURE_FILE_NAME_PATTERN.test(normalized)) {
+    return fallback;
+  }
+  return normalized;
+}
+function asCaptureDirectory(value, fallback) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return fallback;
+  }
+  const resolved = import_node_path.default.resolve(trimmed);
+  if (!import_node_fs.default.existsSync(resolved)) {
+    return fallback;
+  }
+  try {
+    return import_node_fs.default.statSync(resolved).isDirectory() ? resolved : fallback;
+  } catch {
+    return fallback;
+  }
 }
 function asSiteUrl(value, fallback) {
   if (typeof value !== "string") {
@@ -87,7 +128,10 @@ function sanitize(raw) {
     windowHeight: asFiniteNumber(raw.windowHeight, DEFAULT_SETTINGS.windowHeight),
     windowX: asNullableCoordinate(raw.windowX, DEFAULT_SETTINGS.windowX),
     windowY: asNullableCoordinate(raw.windowY, DEFAULT_SETTINGS.windowY),
-    widthResizeOrigin: asWidthResizeOrigin(raw.widthResizeOrigin, DEFAULT_SETTINGS.widthResizeOrigin)
+    widthResizeOrigin: asWidthResizeOrigin(raw.widthResizeOrigin, DEFAULT_SETTINGS.widthResizeOrigin),
+    captureIntervalMin: asCaptureIntervalMin(raw.captureIntervalMin, DEFAULT_SETTINGS.captureIntervalMin),
+    captureFileName: asCaptureFileName(raw.captureFileName, DEFAULT_SETTINGS.captureFileName),
+    captureDirectory: asCaptureDirectory(raw.captureDirectory, DEFAULT_SETTINGS.captureDirectory)
   };
 }
 function resolveSettingsPath(userDataPath) {
@@ -132,11 +176,17 @@ var SAVE_DEBOUNCE_MS = 250;
 var MAX_SITE_URL_LENGTH2 = 64;
 var SETTINGS_FILE_NAME2 = "settings.json";
 var LEGACY_USER_DATA_DIR = "tv-watchlist";
+var CAPTURE_INTERVAL_VALUES2 = [1, 5, 15, 30, 60, 240];
+var CAPTURE_MARGIN_SECONDS = 5;
+var INVALID_CAPTURE_FILE_NAME_PATTERN2 = /[<>:"/\\|?*\u0000-\u001f]/;
 var settings = { ...DEFAULT_SETTINGS };
 var saveTimer = null;
 var ipcRegistered = false;
 var windowContexts = /* @__PURE__ */ new Map();
 var lastClosedLocalSnapshot = null;
+var activeCaptureWindowId = null;
+var capturePaused = false;
+var captureTimer = null;
 function safeNumber(value, fallback = 0) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
@@ -169,6 +219,40 @@ function sanitizeSiteUrl(value, fallback) {
 function sanitizeWidthResizeOrigin(value, fallback) {
   return value === "left" || value === "right" ? value : fallback;
 }
+function sanitizeCaptureIntervalMin(value, fallback) {
+  return CAPTURE_INTERVAL_VALUES2.includes(value) ? value : fallback;
+}
+function normalizeCaptureFileName2(rawValue) {
+  return rawValue.trim().replace(/(?:\.png)+$/i, "").trim();
+}
+function sanitizeCaptureFileName(value, fallback) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const normalized = normalizeCaptureFileName2(value);
+  if (normalized.length === 0 || INVALID_CAPTURE_FILE_NAME_PATTERN2.test(normalized)) {
+    return fallback;
+  }
+  return normalized;
+}
+function sanitizeCaptureDirectory(value, fallback) {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return fallback;
+  }
+  const resolved = import_node_path2.default.resolve(trimmed);
+  if (!import_node_fs2.default.existsSync(resolved)) {
+    return fallback;
+  }
+  try {
+    return import_node_fs2.default.statSync(resolved).isDirectory() ? resolved : fallback;
+  } catch {
+    return fallback;
+  }
+}
 function migrateLegacySettingsIfNeeded() {
   const userDataPath = import_electron.app.getPath("userData");
   const currentSettingsPath = import_node_path2.default.join(userDataPath, SETTINGS_FILE_NAME2);
@@ -188,6 +272,7 @@ function migrateLegacySettingsIfNeeded() {
   }
 }
 function sanitizeSettings(next) {
+  const defaultCaptureDirectory = import_node_path2.default.resolve(import_electron.app.getPath("downloads"));
   const base = {
     theme: sanitizeTheme(next.theme, DEFAULT_SETTINGS.theme),
     alwaysOnTop: Boolean(next.alwaysOnTop),
@@ -201,7 +286,13 @@ function sanitizeSettings(next) {
     widthResizeOrigin: sanitizeWidthResizeOrigin(
       next.widthResizeOrigin,
       DEFAULT_SETTINGS.widthResizeOrigin
-    )
+    ),
+    captureIntervalMin: sanitizeCaptureIntervalMin(
+      next.captureIntervalMin,
+      DEFAULT_SETTINGS.captureIntervalMin
+    ),
+    captureFileName: sanitizeCaptureFileName(next.captureFileName, DEFAULT_SETTINGS.captureFileName),
+    captureDirectory: sanitizeCaptureDirectory(next.captureDirectory, defaultCaptureDirectory)
   };
   return {
     ...base,
@@ -286,7 +377,10 @@ function composeSettings(context) {
     windowHeight: context.local.windowHeight,
     windowX: context.local.windowX,
     windowY: context.local.windowY,
-    widthResizeOrigin: context.local.widthResizeOrigin
+    widthResizeOrigin: context.local.widthResizeOrigin,
+    captureIntervalMin: settings.captureIntervalMin,
+    captureFileName: settings.captureFileName,
+    captureDirectory: settings.captureDirectory
   };
 }
 function computeLayout(windowWidth, local) {
@@ -348,6 +442,135 @@ function applyThemeAndWindowFlags() {
   for (const context of windowContexts.values()) {
     applyWindowAppearance(context, true);
   }
+}
+function composeCaptureState() {
+  return {
+    activeWindowId: activeCaptureWindowId
+  };
+}
+function emitCaptureStateChanged() {
+  const payload = composeCaptureState();
+  for (const context of windowContexts.values()) {
+    try {
+      if (context.window.isDestroyed()) {
+        continue;
+      }
+      const webContents = context.window.webContents;
+      if (webContents.isDestroyed()) {
+        continue;
+      }
+      webContents.send("capture:state:changed", payload);
+    } catch {
+    }
+  }
+}
+function clearCaptureTimer() {
+  if (captureTimer) {
+    clearTimeout(captureTimer);
+    captureTimer = null;
+  }
+}
+function resolveActiveCaptureContext() {
+  if (activeCaptureWindowId === null) {
+    return null;
+  }
+  return windowContexts.get(activeCaptureWindowId) ?? null;
+}
+function computeNextCaptureTime(now, intervalMin) {
+  const minute = now.getMinutes();
+  const remainder = minute % intervalMin;
+  const minutesUntilNext = remainder === 0 ? intervalMin : intervalMin - remainder;
+  const nextCaptureTime = new Date(now.getTime());
+  nextCaptureTime.setSeconds(0, 0);
+  nextCaptureTime.setMinutes(nextCaptureTime.getMinutes() + minutesUntilNext);
+  nextCaptureTime.setSeconds(CAPTURE_MARGIN_SECONDS, 0);
+  return nextCaptureTime;
+}
+function stopPeriodicCapture(options) {
+  clearCaptureTimer();
+  activeCaptureWindowId = null;
+  capturePaused = false;
+  if (options?.emit ?? true) {
+    emitCaptureStateChanged();
+  }
+}
+async function captureAndSave(context) {
+  if (context.tradingView.webContents.isDestroyed()) {
+    return;
+  }
+  const image = await context.tradingView.webContents.capturePage();
+  const captureFilePath = import_node_path2.default.join(settings.captureDirectory, `${settings.captureFileName}.png`);
+  await import_node_fs2.default.promises.writeFile(captureFilePath, image.toPNG());
+}
+function scheduleNextCapture() {
+  clearCaptureTimer();
+  if (activeCaptureWindowId === null || capturePaused) {
+    return;
+  }
+  const context = resolveActiveCaptureContext();
+  if (!context) {
+    stopPeriodicCapture();
+    return;
+  }
+  const now = /* @__PURE__ */ new Date();
+  const nextCaptureTime = computeNextCaptureTime(now, settings.captureIntervalMin);
+  const delayMs = Math.max(50, nextCaptureTime.getTime() - now.getTime());
+  captureTimer = setTimeout(() => {
+    captureTimer = null;
+    void executeCaptureAndScheduleNext();
+  }, delayMs);
+}
+async function executeCaptureAndScheduleNext() {
+  const context = resolveActiveCaptureContext();
+  if (!context) {
+    stopPeriodicCapture();
+    return;
+  }
+  if (capturePaused) {
+    return;
+  }
+  try {
+    await captureAndSave(context);
+  } catch (error) {
+    console.error("Failed to capture periodic screenshot:", error);
+  } finally {
+    scheduleNextCapture();
+  }
+}
+function setCapturePausedForContext(context, paused) {
+  if (activeCaptureWindowId !== context.window.id) {
+    return;
+  }
+  const nextPaused = Boolean(paused);
+  if (capturePaused === nextPaused) {
+    return;
+  }
+  capturePaused = nextPaused;
+  if (capturePaused) {
+    clearCaptureTimer();
+  } else {
+    scheduleNextCapture();
+  }
+  emitCaptureStateChanged();
+}
+function togglePeriodicCapture(context) {
+  if (activeCaptureWindowId === null) {
+    activeCaptureWindowId = context.window.id;
+    capturePaused = context.tradingViewSuspended;
+    if (!capturePaused) {
+      scheduleNextCapture();
+    }
+    emitCaptureStateChanged();
+    return { status: "started" };
+  }
+  if (activeCaptureWindowId === context.window.id) {
+    stopPeriodicCapture();
+    return { status: "stopped" };
+  }
+  return {
+    status: "blocked",
+    reason: "another-window"
+  };
 }
 function isAllowedExternalUrl(rawUrl) {
   try {
@@ -460,7 +683,8 @@ function createAppWindow(sourceWindowId) {
     webPreferences: {
       preload: import_node_path2.default.join(__dirname, "renderer-preload.js"),
       contextIsolation: true,
-      sandbox: false
+      sandbox: false,
+      backgroundThrottling: false
     }
   };
   if (sourceContext && !sourceContext.window.isDestroyed()) {
@@ -490,7 +714,8 @@ function createAppWindow(sourceWindowId) {
     tradingView,
     local,
     latestLayout: null,
-    tradingViewSuspended: false
+    tradingViewSuspended: false,
+    allowCloseAfterCaptureConfirm: false
   };
   windowContexts.set(windowRef.id, context);
   windowRef.contentView.addChildView(tradingView);
@@ -514,16 +739,42 @@ function createAppWindow(sourceWindowId) {
   windowRef.on("moved", () => {
     updateWindowPositionInLocalSettings(context);
   });
-  windowRef.on("close", () => {
+  windowRef.on("close", (event) => {
+    const captureEnabledOnThisWindow = activeCaptureWindowId === windowRef.id;
+    if (captureEnabledOnThisWindow && !context.allowCloseAfterCaptureConfirm) {
+      event.preventDefault();
+      const choice = import_electron.dialog.showMessageBoxSync(windowRef, {
+        type: "question",
+        buttons: ["No", "Yes"],
+        defaultId: 0,
+        cancelId: 0,
+        textWidth: 360,
+        message: "Periodic\xA0Screen\xA0Capture\xA0is\xA0enabled.\nDo\xA0you\xA0want\xA0to\xA0close\xA0this\xA0window\xA0?"
+      });
+      if (choice !== 1) {
+        return;
+      }
+      context.allowCloseAfterCaptureConfirm = true;
+      stopPeriodicCapture({ emit: false });
+      emitCaptureStateChanged();
+      windowRef.close();
+      return;
+    }
     captureWindowSnapshot(context);
   });
   windowRef.on("closed", () => {
+    const wasCaptureEnabledOnThisWindow = activeCaptureWindowId === windowRef.id;
     lastClosedLocalSnapshot = { ...context.local };
     windowContexts.delete(windowRef.id);
+    if (wasCaptureEnabledOnThisWindow) {
+      stopPeriodicCapture({ emit: false });
+      emitCaptureStateChanged();
+    }
   });
   windowRef.webContents.on("did-finish-load", () => {
     applyWindowAppearance(context, true);
     broadcastLayout(context);
+    emitCaptureStateChanged();
   });
   return windowRef;
 }
@@ -561,6 +812,10 @@ function registerIpc() {
     const source = resolveWindowContext(event);
     createAppWindow(source?.window.id);
   });
+  import_electron.ipcMain.handle("window:get-id", (event) => {
+    const context = requireWindowContext(event);
+    return context.window.id;
+  });
   import_electron.ipcMain.handle("settings:get", (event) => {
     const context = requireWindowContext(event);
     return composeSettings(context);
@@ -569,7 +824,20 @@ function registerIpc() {
     const context = requireWindowContext(event);
     const nextTheme = sanitizeTheme(patch.theme, settings.theme);
     const nextSiteUrl = sanitizeSiteUrl(patch.siteUrl, settings.siteUrl);
+    const nextCaptureIntervalMin = sanitizeCaptureIntervalMin(
+      patch.captureIntervalMin,
+      settings.captureIntervalMin
+    );
+    const nextCaptureFileName = sanitizeCaptureFileName(
+      patch.captureFileName,
+      settings.captureFileName
+    );
+    const nextCaptureDirectory = sanitizeCaptureDirectory(
+      patch.captureDirectory,
+      settings.captureDirectory
+    );
     let globalChanged = false;
+    let captureSettingsChanged = false;
     if (nextTheme !== settings.theme) {
       settings = { ...settings, theme: nextTheme };
       globalChanged = true;
@@ -578,6 +846,21 @@ function registerIpc() {
     if (nextSiteUrl !== settings.siteUrl) {
       settings = { ...settings, siteUrl: nextSiteUrl };
       globalChanged = true;
+    }
+    if (nextCaptureIntervalMin !== settings.captureIntervalMin) {
+      settings = { ...settings, captureIntervalMin: nextCaptureIntervalMin };
+      globalChanged = true;
+      captureSettingsChanged = true;
+    }
+    if (nextCaptureFileName !== settings.captureFileName) {
+      settings = { ...settings, captureFileName: nextCaptureFileName };
+      globalChanged = true;
+      captureSettingsChanged = true;
+    }
+    if (nextCaptureDirectory !== settings.captureDirectory) {
+      settings = { ...settings, captureDirectory: nextCaptureDirectory };
+      globalChanged = true;
+      captureSettingsChanged = true;
     }
     const localPatchProvided = typeof patch.alwaysOnTop === "boolean" || patch.cardWidth !== void 0 || patch.cardHeight !== void 0 || patch.windowWidth !== void 0 || patch.windowHeight !== void 0 || patch.windowX !== void 0 || patch.windowY !== void 0 || patch.widthResizeOrigin !== void 0;
     let localChanged = false;
@@ -606,6 +889,9 @@ function registerIpc() {
     }
     if (settings.siteUrl !== previousSiteUrl) {
       loadTradingViewTargets(settings.siteUrl);
+    }
+    if (captureSettingsChanged && activeCaptureWindowId !== null && !capturePaused) {
+      scheduleNextCapture();
     }
     if (globalChanged) {
       applyThemeAndWindowFlags();
@@ -643,7 +929,28 @@ function registerIpc() {
   import_electron.ipcMain.handle("trading-view:set-suspended", (event, suspended) => {
     const context = requireWindowContext(event);
     context.tradingViewSuspended = Boolean(suspended);
+    setCapturePausedForContext(context, context.tradingViewSuspended);
     broadcastLayout(context);
+  });
+  import_electron.ipcMain.handle("capture:directory:pick", async (event) => {
+    const context = requireWindowContext(event);
+    const { canceled, filePaths } = await import_electron.dialog.showOpenDialog(context.window, {
+      title: "Select Capture Directory",
+      defaultPath: settings.captureDirectory,
+      properties: ["openDirectory"]
+    });
+    if (canceled || filePaths.length === 0) {
+      return null;
+    }
+    return sanitizeCaptureDirectory(filePaths[0], settings.captureDirectory);
+  });
+  import_electron.ipcMain.handle("capture:toggle", (event) => {
+    const context = requireWindowContext(event);
+    return togglePeriodicCapture(context);
+  });
+  import_electron.ipcMain.handle("capture:state:get", (event) => {
+    requireWindowContext(event);
+    return composeCaptureState();
   });
   import_electron.ipcMain.handle(
     "window:set-width",
@@ -691,6 +998,7 @@ void import_electron.app.whenReady().then(() => {
   });
 });
 import_electron.app.on("window-all-closed", () => {
+  stopPeriodicCapture({ emit: false });
   if (lastClosedLocalSnapshot) {
     mergeLocalSettingsIntoDefaults(lastClosedLocalSnapshot, { includePosition: true });
     flushSettings();

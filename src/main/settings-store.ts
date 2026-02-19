@@ -1,9 +1,13 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import type { AppSettings } from "../shared/types";
+import type { AppSettings, CaptureIntervalMin } from "../shared/types";
 
 const SETTINGS_FILE_NAME = "settings.json";
 const MAX_SITE_URL_LENGTH = 64;
+const CAPTURE_INTERVAL_VALUES: readonly CaptureIntervalMin[] = [1, 5, 15, 30, 60, 240];
+const INVALID_CAPTURE_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001f]/;
+const DEFAULT_CAPTURE_DIRECTORY = path.join(os.homedir(), "Downloads");
 
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: "dark",
@@ -15,7 +19,10 @@ export const DEFAULT_SETTINGS: AppSettings = {
   windowHeight: 920,
   windowX: null,
   windowY: null,
-  widthResizeOrigin: "right"
+  widthResizeOrigin: "right",
+  captureIntervalMin: 5,
+  captureFileName: "capture",
+  captureDirectory: DEFAULT_CAPTURE_DIRECTORY
 };
 
 function asFiniteNumber(value: unknown, fallback: number): number {
@@ -43,6 +50,52 @@ function asWidthResizeOrigin(
   fallback: AppSettings["widthResizeOrigin"]
 ): AppSettings["widthResizeOrigin"] {
   return value === "right" || value === "left" ? value : fallback;
+}
+
+function asCaptureIntervalMin(
+  value: unknown,
+  fallback: AppSettings["captureIntervalMin"]
+): AppSettings["captureIntervalMin"] {
+  return CAPTURE_INTERVAL_VALUES.includes(value as CaptureIntervalMin) ? (value as CaptureIntervalMin) : fallback;
+}
+
+function normalizeCaptureFileName(value: string): string {
+  return value.trim().replace(/(?:\.png)+$/i, "").trim();
+}
+
+function asCaptureFileName(value: unknown, fallback: AppSettings["captureFileName"]): string {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  const normalized = normalizeCaptureFileName(value);
+  if (normalized.length === 0 || INVALID_CAPTURE_FILE_NAME_PATTERN.test(normalized)) {
+    return fallback;
+  }
+
+  return normalized;
+}
+
+function asCaptureDirectory(value: unknown, fallback: AppSettings["captureDirectory"]): string {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return fallback;
+  }
+
+  const resolved = path.resolve(trimmed);
+  if (!fs.existsSync(resolved)) {
+    return fallback;
+  }
+
+  try {
+    return fs.statSync(resolved).isDirectory() ? resolved : fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function asSiteUrl(value: unknown, fallback: string): string {
@@ -73,7 +126,10 @@ function sanitize(raw: Partial<AppSettings>): AppSettings {
     windowHeight: asFiniteNumber(raw.windowHeight, DEFAULT_SETTINGS.windowHeight),
     windowX: asNullableCoordinate(raw.windowX, DEFAULT_SETTINGS.windowX),
     windowY: asNullableCoordinate(raw.windowY, DEFAULT_SETTINGS.windowY),
-    widthResizeOrigin: asWidthResizeOrigin(raw.widthResizeOrigin, DEFAULT_SETTINGS.widthResizeOrigin)
+    widthResizeOrigin: asWidthResizeOrigin(raw.widthResizeOrigin, DEFAULT_SETTINGS.widthResizeOrigin),
+    captureIntervalMin: asCaptureIntervalMin(raw.captureIntervalMin, DEFAULT_SETTINGS.captureIntervalMin),
+    captureFileName: asCaptureFileName(raw.captureFileName, DEFAULT_SETTINGS.captureFileName),
+    captureDirectory: asCaptureDirectory(raw.captureDirectory, DEFAULT_SETTINGS.captureDirectory)
   };
 }
 

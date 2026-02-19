@@ -11,6 +11,16 @@
       <header class="topbar">
         <div class="topbar-right">
           <span id="clock" aria-live="polite"></span>
+          <button
+            id="periodic-capture-button"
+            type="button"
+            title="Periodic Screen Capture"
+            aria-label="Periodic Screen Capture"
+            aria-pressed="false"
+          >
+            C
+          </button>
+          <span id="capture-blocked-tooltip" role="status" aria-live="polite" aria-hidden="true"></span>
           <button id="new-window-button" type="button" title="New Window" aria-label="New Window">
             N
           </button>
@@ -55,6 +65,44 @@
               spellcheck="false"
             />
           </label>
+          <fieldset class="settings-field" id="capture-interval-fieldset">
+            <legend>Capturing Interval (min)</legend>
+            <div id="capture-interval-options" role="radiogroup" aria-label="Capturing Interval (min)">
+              <label><input type="radio" name="capture-interval-min" value="1" />1</label>
+              <label><input type="radio" name="capture-interval-min" value="5" />5</label>
+              <label><input type="radio" name="capture-interval-min" value="15" />15</label>
+              <label><input type="radio" name="capture-interval-min" value="30" />30</label>
+              <label><input type="radio" name="capture-interval-min" value="60" />60</label>
+              <label><input type="radio" name="capture-interval-min" value="240" />240</label>
+            </div>
+          </fieldset>
+          <label class="settings-field" for="capture-file-name-input">
+            <span>File Name</span>
+            <div class="file-name-row">
+              <input
+                id="capture-file-name-input"
+                type="text"
+                maxlength="120"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <span class="file-name-suffix">.png</span>
+            </div>
+          </label>
+          <p id="capture-file-name-error" role="alert" aria-live="polite"></p>
+          <label class="settings-field" for="capture-directory-input">
+            <span>Download to</span>
+            <div class="download-directory-row">
+              <input
+                id="capture-directory-input"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+              />
+              <button id="capture-directory-browse-button" type="button">Browse...</button>
+            </div>
+          </label>
+          <p id="capture-directory-error" role="alert" aria-live="polite"></p>
           <p id="site-url-error" role="alert" aria-live="polite"></p>
           <div class="settings-actions">
             <button id="settings-cancel-button" type="button">Cancel</button>
