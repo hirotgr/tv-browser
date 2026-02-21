@@ -1,4 +1,11 @@
-import type { AppSettings, LayoutMetrics, ThemeMode, WidthResizeOrigin } from "../shared/types";
+import type {
+  AppSettings,
+  CaptureIntervalMin,
+  CaptureState,
+  LayoutMetrics,
+  ThemeMode,
+  WidthResizeOrigin
+} from "../shared/types";
 
 function mustQuery<TElement extends Element>(selector: string): TElement {
   const found = document.querySelector<TElement>(selector);
@@ -9,6 +16,8 @@ function mustQuery<TElement extends Element>(selector: string): TElement {
 }
 
 const clockElement = mustQuery<HTMLSpanElement>("#clock");
+const periodicCaptureButton = mustQuery<HTMLButtonElement>("#periodic-capture-button");
+const captureBlockedTooltip = mustQuery<HTMLSpanElement>("#capture-blocked-tooltip");
 const newWindowButton = mustQuery<HTMLButtonElement>("#new-window-button");
 const expandWidthButton = mustQuery<HTMLButtonElement>("#expand-width-button");
 const shrinkWidthButton = mustQuery<HTMLButtonElement>("#shrink-width-button");
@@ -21,9 +30,25 @@ const themeSelect = mustQuery<HTMLSelectElement>("#theme-select");
 const alwaysOnTopToggle = mustQuery<HTMLInputElement>("#always-on-top-toggle");
 const siteUrlInput = mustQuery<HTMLInputElement>("#site-url-input");
 const siteUrlError = mustQuery<HTMLParagraphElement>("#site-url-error");
+const captureFileNameInput = mustQuery<HTMLInputElement>("#capture-file-name-input");
+const captureFileNameError = mustQuery<HTMLParagraphElement>("#capture-file-name-error");
+const captureDirectoryInput = mustQuery<HTMLInputElement>("#capture-directory-input");
+const captureDirectoryBrowseButton = mustQuery<HTMLButtonElement>("#capture-directory-browse-button");
+const captureDirectoryError = mustQuery<HTMLParagraphElement>("#capture-directory-error");
 const cardFrame = mustQuery<HTMLElement>("#card-frame");
 const resizeHandle = mustQuery<HTMLButtonElement>("#resize-handle");
+const captureIntervalInputs = Array.from(
+  document.querySelectorAll<HTMLInputElement>('input[name="capture-interval-min"]')
+);
+
+if (captureIntervalInputs.length === 0) {
+  throw new Error('Renderer UI bootstrap failed: missing capture interval radios "capture-interval-min".');
+}
+
 const SITE_URL_MAX_LENGTH = 64;
+const BLOCKED_TOOLTIP_DURATION_MS = 2_000;
+const INVALID_CAPTURE_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001f]/;
+const CAPTURE_INTERVAL_OPTIONS: readonly CaptureIntervalMin[] = [1, 5, 15, 30, 60, 240];
 
 const jstFormatter = new Intl.DateTimeFormat("ja-JP", {
   hour: "2-digit",
@@ -34,6 +59,8 @@ const jstFormatter = new Intl.DateTimeFormat("ja-JP", {
 
 let currentSettings: AppSettings | null = null;
 let currentLayout: LayoutMetrics | null = null;
+let currentWindowId: number | null = null;
+let blockedTooltipTimer: number | null = null;
 
 interface ResizeDragState {
   pointerId: number;
@@ -53,6 +80,18 @@ function setTheme(theme: ThemeMode): void {
 
 function setSiteUrlError(message: string): void {
   siteUrlError.textContent = message;
+}
+
+function setCaptureFileNameError(message: string): void {
+  captureFileNameError.textContent = message;
+}
+
+function setCaptureDirectoryError(message: string): void {
+  captureDirectoryError.textContent = message;
+}
+
+function normalizeCaptureFileName(rawValue: string): string {
+  return rawValue.trim().replace(/(?:\.png)+$/i, "").trim();
 }
 
 function validateSiteUrl(rawValue: string): { ok: true; value: string } | { ok: false; message: string } {
@@ -76,6 +115,29 @@ function validateSiteUrl(rawValue: string): { ok: true; value: string } | { ok: 
   }
 }
 
+function validateCaptureFileName(
+  rawValue: string
+): { ok: true; value: string } | { ok: false; message: string } {
+  const normalized = normalizeCaptureFileName(rawValue);
+  if (normalized.length === 0) {
+    return { ok: false, message: "File Name is required." };
+  }
+
+  if (INVALID_CAPTURE_FILE_NAME_PATTERN.test(normalized)) {
+    return { ok: false, message: "File Name contains invalid characters." };
+  }
+
+  return { ok: true, value: normalized };
+}
+
+function normalizeDirectoryForCompare(rawValue: string): string {
+  const trimmed = rawValue.trim();
+  if (trimmed === "/" || trimmed.length === 0) {
+    return trimmed;
+  }
+  return trimmed.replace(/[\\/]+$/, "");
+}
+
 async function setSettingsModalOpen(isOpen: boolean): Promise<void> {
   try {
     await window.desktopApi.setTradingViewSuspended(isOpen);
@@ -90,13 +152,32 @@ function updateClock(): void {
 
 function startClockTicker(): void {
   updateClock();
-  const now = new Date();
-  const delayUntilNextMinute = (60 - now.getSeconds()) * 1000 - now.getMilliseconds();
-  setTimeout(() => {
-    updateClock();
-    setInterval(updateClock, 60_000);
-  }, Math.max(100, delayUntilNextMinute));
+
+  const scheduleNextTick = (): void => {
+    const now = new Date();
+    const delayUntilNextMinute = 60_000 - (now.getSeconds() * 1_000 + now.getMilliseconds());
+    setTimeout(() => {
+      updateClock();
+      scheduleNextTick();
+    }, Math.max(100, delayUntilNextMinute));
+  };
+
+  scheduleNextTick();
 }
+
+function selectedWidthOrigin(): WidthResizeOrigin {
+  return widthOriginSelect.value === "left" ? "left" : "right";
+}
+
+function selectedCaptureInterval(): CaptureIntervalMin {
+  const selected = captureIntervalInputs.find((input) => input.checked);
+  const numericValue = Number(selected?.value ?? DEFAULT_CAPTURE_INTERVAL);
+  return CAPTURE_INTERVAL_OPTIONS.includes(numericValue as CaptureIntervalMin)
+    ? (numericValue as CaptureIntervalMin)
+    : DEFAULT_CAPTURE_INTERVAL;
+}
+
+const DEFAULT_CAPTURE_INTERVAL: CaptureIntervalMin = 5;
 
 function applySettings(nextSettings: AppSettings): void {
   currentSettings = nextSettings;
@@ -105,10 +186,39 @@ function applySettings(nextSettings: AppSettings): void {
   themeSelect.value = nextSettings.theme;
   alwaysOnTopToggle.checked = nextSettings.alwaysOnTop;
   siteUrlInput.value = nextSettings.siteUrl;
+  captureFileNameInput.value = nextSettings.captureFileName;
+  captureDirectoryInput.value = nextSettings.captureDirectory;
+
+  for (const input of captureIntervalInputs) {
+    input.checked = Number(input.value) === nextSettings.captureIntervalMin;
+  }
 }
 
-function selectedWidthOrigin(): WidthResizeOrigin {
-  return widthOriginSelect.value === "left" ? "left" : "right";
+function applyCaptureState(nextState: CaptureState): void {
+  const activeOnThisWindow = currentWindowId !== null && nextState.activeWindowId === currentWindowId;
+  periodicCaptureButton.setAttribute("aria-pressed", activeOnThisWindow ? "true" : "false");
+}
+
+function showCaptureBlockedTooltip(message: string): void {
+  captureBlockedTooltip.textContent = message;
+  captureBlockedTooltip.dataset.visible = "true";
+  captureBlockedTooltip.setAttribute("aria-hidden", "false");
+
+  if (blockedTooltipTimer !== null) {
+    window.clearTimeout(blockedTooltipTimer);
+  }
+
+  blockedTooltipTimer = window.setTimeout(() => {
+    captureBlockedTooltip.dataset.visible = "false";
+    captureBlockedTooltip.setAttribute("aria-hidden", "true");
+    blockedTooltipTimer = null;
+  }, BLOCKED_TOOLTIP_DURATION_MS);
+}
+
+function clearSettingsErrors(): void {
+  setSiteUrlError("");
+  setCaptureFileNameError("");
+  setCaptureDirectoryError("");
 }
 
 function applyLayout(layout: LayoutMetrics): void {
@@ -186,6 +296,20 @@ function endResize(event: PointerEvent): void {
 }
 
 function installEvents(): void {
+  periodicCaptureButton.addEventListener("click", async () => {
+    try {
+      const result = await window.desktopApi.togglePeriodicCapture();
+      if (result.status === "blocked") {
+        showCaptureBlockedTooltip("Capturing on another window");
+        return;
+      }
+
+      applyCaptureState(await window.desktopApi.getCaptureState());
+    } catch (error) {
+      console.error("Failed to toggle periodic capture:", error);
+    }
+  });
+
   newWindowButton.addEventListener("click", () => {
     void window.desktopApi.createWindow();
   });
@@ -223,7 +347,7 @@ function installEvents(): void {
       if (currentSettings) {
         applySettings(currentSettings);
       }
-      setSiteUrlError("");
+      clearSettingsErrors();
       void setSettingsModalOpen(true).then(() => {
         try {
           settingsDialog.showModal();
@@ -240,9 +364,19 @@ function installEvents(): void {
 
   settingsDialog.addEventListener("close", () => {
     void setSettingsModalOpen(false);
-    setSiteUrlError("");
+    clearSettingsErrors();
     if (currentSettings) {
       applySettings(currentSettings);
+    }
+  });
+
+  window.addEventListener("focus", () => {
+    updateClock();
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      updateClock();
     }
   });
 
@@ -250,6 +384,28 @@ function installEvents(): void {
     if (siteUrlError.textContent) {
       setSiteUrlError("");
     }
+  });
+
+  captureFileNameInput.addEventListener("input", () => {
+    if (captureFileNameError.textContent) {
+      setCaptureFileNameError("");
+    }
+  });
+
+  captureDirectoryInput.addEventListener("input", () => {
+    if (captureDirectoryError.textContent) {
+      setCaptureDirectoryError("");
+    }
+  });
+
+  captureDirectoryBrowseButton.addEventListener("click", async () => {
+    const selected = await window.desktopApi.pickCaptureDirectory();
+    if (!selected) {
+      return;
+    }
+
+    captureDirectoryInput.value = selected;
+    setCaptureDirectoryError("");
   });
 
   settingsForm.addEventListener("submit", async (event) => {
@@ -260,13 +416,47 @@ function installEvents(): void {
       return;
     }
 
+    const captureFileNameResult = validateCaptureFileName(captureFileNameInput.value);
+    if (!captureFileNameResult.ok) {
+      setCaptureFileNameError(captureFileNameResult.message);
+      return;
+    }
+
+    const captureDirectory = captureDirectoryInput.value.trim();
+    if (captureDirectory.length === 0) {
+      setCaptureDirectoryError("Download directory is required.");
+      return;
+    }
+    if (!captureDirectory.startsWith("/")) {
+      setCaptureDirectoryError("Download directory must be an absolute path.");
+      return;
+    }
+
     try {
-      setSiteUrlError("");
+      clearSettingsErrors();
       const theme: ThemeMode = themeSelect.value === "light" ? "light" : "dark";
       const updated = await window.desktopApi.updateSettings({
         theme,
-        siteUrl: siteUrlResult.value
+        siteUrl: siteUrlResult.value,
+        captureIntervalMin: selectedCaptureInterval(),
+        captureFileName: captureFileNameResult.value,
+        captureDirectory
       });
+
+      const requestedDirectory = normalizeDirectoryForCompare(captureDirectory);
+      const updatedDirectory = normalizeDirectoryForCompare(updated.captureDirectory);
+      if (requestedDirectory !== updatedDirectory) {
+        setCaptureDirectoryError("Download directory must be an existing directory.");
+        applySettings(updated);
+        return;
+      }
+
+      if (updated.captureFileName !== captureFileNameResult.value) {
+        setCaptureFileNameError("File Name contains invalid characters.");
+        applySettings(updated);
+        return;
+      }
+
       applySettings(updated);
       settingsDialog.close();
     } catch {
@@ -284,12 +474,17 @@ async function bootstrap(): Promise<void> {
   installEvents();
   startClockTicker();
 
-  const [settings, layout] = await Promise.all([
+  const [windowId, settings, layout, captureState] = await Promise.all([
+    window.desktopApi.getWindowId(),
     window.desktopApi.getSettings(),
-    window.desktopApi.getLayout()
+    window.desktopApi.getLayout(),
+    window.desktopApi.getCaptureState()
   ]);
 
+  currentWindowId = windowId;
   applySettings(settings);
+  applyCaptureState(captureState);
+
   if (layout) {
     applyLayout(layout);
   }
@@ -300,6 +495,10 @@ async function bootstrap(): Promise<void> {
 
   window.desktopApi.onSettingsChanged((nextSettings) => {
     applySettings(nextSettings);
+  });
+
+  window.desktopApi.onCaptureStateChanged((nextState) => {
+    applyCaptureState(nextState);
   });
 }
 

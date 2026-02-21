@@ -1,5 +1,11 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { AppSettings, LayoutMetrics, WidthResizeOrigin } from "../shared/types";
+import type {
+  AppSettings,
+  CaptureState,
+  CaptureToggleResult,
+  LayoutMetrics,
+  WidthResizeOrigin
+} from "../shared/types";
 
 type Unsubscribe = () => void;
 
@@ -15,6 +21,7 @@ function subscribe<T>(channel: string, callback: (payload: T) => void): Unsubscr
 
 contextBridge.exposeInMainWorld("desktopApi", {
   createWindow: (): Promise<void> => ipcRenderer.invoke("window:create"),
+  getWindowId: (): Promise<number> => ipcRenderer.invoke("window:get-id"),
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke("settings:get"),
   updateSettings: (patch: Partial<AppSettings>): Promise<AppSettings> =>
     ipcRenderer.invoke("settings:update", patch),
@@ -27,8 +34,13 @@ contextBridge.exposeInMainWorld("desktopApi", {
   }): Promise<{ width: number; height: number }> => ipcRenderer.invoke("window:set-width", payload),
   setTradingViewSuspended: (suspended: boolean): Promise<void> =>
     ipcRenderer.invoke("trading-view:set-suspended", suspended),
+  pickCaptureDirectory: (): Promise<string | null> => ipcRenderer.invoke("capture:directory:pick"),
+  togglePeriodicCapture: (): Promise<CaptureToggleResult> => ipcRenderer.invoke("capture:toggle"),
+  getCaptureState: (): Promise<CaptureState> => ipcRenderer.invoke("capture:state:get"),
   onLayoutChanged: (callback: (layout: LayoutMetrics) => void): Unsubscribe =>
     subscribe<LayoutMetrics>("layout:changed", callback),
   onSettingsChanged: (callback: (nextSettings: AppSettings) => void): Unsubscribe =>
-    subscribe<AppSettings>("settings:changed", callback)
+    subscribe<AppSettings>("settings:changed", callback),
+  onCaptureStateChanged: (callback: (state: CaptureState) => void): Unsubscribe =>
+    subscribe<CaptureState>("capture:state:changed", callback)
 });

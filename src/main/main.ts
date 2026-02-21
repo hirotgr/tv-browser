@@ -3,6 +3,7 @@ import path from "node:path";
 import {
   app,
   BrowserWindow,
+  dialog,
   Menu,
   Rectangle,
   ipcMain,
@@ -15,6 +16,9 @@ import type { IpcMainInvokeEvent, MenuItemConstructorOptions } from "electron";
 import { DEFAULT_SETTINGS, loadSettings, saveSettings } from "./settings-store";
 import type {
   AppSettings,
+  CaptureIntervalMin,
+  CaptureState,
+  CaptureToggleResult,
   LayoutMetrics,
   ThemeMode,
   WidthResizeOrigin
@@ -39,6 +43,9 @@ const SAVE_DEBOUNCE_MS = 250;
 const MAX_SITE_URL_LENGTH = 64;
 const SETTINGS_FILE_NAME = "settings.json";
 const LEGACY_USER_DATA_DIR = "tv-watchlist";
+const CAPTURE_INTERVAL_VALUES: readonly CaptureIntervalMin[] = [1, 5, 15, 30, 60, 240];
+const CAPTURE_MARGIN_SECONDS = 5;
+const INVALID_CAPTURE_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001f]/;
 
 interface WindowLocalSettings {
   alwaysOnTop: boolean;
@@ -57,6 +64,7 @@ interface WindowContext {
   local: WindowLocalSettings;
   latestLayout: LayoutMetrics | null;
   tradingViewSuspended: boolean;
+  allowCloseAfterCaptureConfirm: boolean;
 }
 
 let settings: AppSettings = { ...DEFAULT_SETTINGS };
@@ -64,6 +72,9 @@ let saveTimer: NodeJS.Timeout | null = null;
 let ipcRegistered = false;
 const windowContexts = new Map<number, WindowContext>();
 let lastClosedLocalSnapshot: WindowLocalSettings | null = null;
+let activeCaptureWindowId: number | null = null;
+let capturePaused = false;
+let captureTimer: NodeJS.Timeout | null = null;
 
 function safeNumber(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
@@ -109,6 +120,54 @@ function sanitizeWidthResizeOrigin(
   return value === "left" || value === "right" ? value : fallback;
 }
 
+function sanitizeCaptureIntervalMin(
+  value: unknown,
+  fallback: CaptureIntervalMin
+): CaptureIntervalMin {
+  return CAPTURE_INTERVAL_VALUES.includes(value as CaptureIntervalMin)
+    ? (value as CaptureIntervalMin)
+    : fallback;
+}
+
+function normalizeCaptureFileName(rawValue: string): string {
+  return rawValue.trim().replace(/(?:\.png)+$/i, "").trim();
+}
+
+function sanitizeCaptureFileName(value: unknown, fallback: string): string {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  const normalized = normalizeCaptureFileName(value);
+  if (normalized.length === 0 || INVALID_CAPTURE_FILE_NAME_PATTERN.test(normalized)) {
+    return fallback;
+  }
+
+  return normalized;
+}
+
+function sanitizeCaptureDirectory(value: unknown, fallback: string): string {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return fallback;
+  }
+
+  const resolved = path.resolve(trimmed);
+  if (!fs.existsSync(resolved)) {
+    return fallback;
+  }
+
+  try {
+    return fs.statSync(resolved).isDirectory() ? resolved : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function migrateLegacySettingsIfNeeded(): void {
   const userDataPath = app.getPath("userData");
   const currentSettingsPath = path.join(userDataPath, SETTINGS_FILE_NAME);
@@ -131,6 +190,7 @@ function migrateLegacySettingsIfNeeded(): void {
 }
 
 function sanitizeSettings(next: AppSettings): AppSettings {
+  const defaultCaptureDirectory = path.resolve(app.getPath("downloads"));
   const base = {
     theme: sanitizeTheme(next.theme, DEFAULT_SETTINGS.theme),
     alwaysOnTop: Boolean(next.alwaysOnTop),
@@ -144,7 +204,13 @@ function sanitizeSettings(next: AppSettings): AppSettings {
     widthResizeOrigin: sanitizeWidthResizeOrigin(
       next.widthResizeOrigin,
       DEFAULT_SETTINGS.widthResizeOrigin
-    )
+    ),
+    captureIntervalMin: sanitizeCaptureIntervalMin(
+      next.captureIntervalMin,
+      DEFAULT_SETTINGS.captureIntervalMin
+    ),
+    captureFileName: sanitizeCaptureFileName(next.captureFileName, DEFAULT_SETTINGS.captureFileName),
+    captureDirectory: sanitizeCaptureDirectory(next.captureDirectory, defaultCaptureDirectory)
   };
 
   return {
@@ -252,7 +318,10 @@ function composeSettings(context: WindowContext): AppSettings {
     windowHeight: context.local.windowHeight,
     windowX: context.local.windowX,
     windowY: context.local.windowY,
-    widthResizeOrigin: context.local.widthResizeOrigin
+    widthResizeOrigin: context.local.widthResizeOrigin,
+    captureIntervalMin: settings.captureIntervalMin,
+    captureFileName: settings.captureFileName,
+    captureDirectory: settings.captureDirectory
   };
 }
 
@@ -324,6 +393,161 @@ function applyThemeAndWindowFlags(): void {
   for (const context of windowContexts.values()) {
     applyWindowAppearance(context, true);
   }
+}
+
+function composeCaptureState(): CaptureState {
+  return {
+    activeWindowId: activeCaptureWindowId
+  };
+}
+
+function emitCaptureStateChanged(): void {
+  const payload = composeCaptureState();
+  for (const context of windowContexts.values()) {
+    try {
+      if (context.window.isDestroyed()) {
+        continue;
+      }
+
+      const webContents = context.window.webContents;
+      if (webContents.isDestroyed()) {
+        continue;
+      }
+
+      webContents.send("capture:state:changed", payload);
+    } catch {
+      // Ignore races while windows are being torn down.
+    }
+  }
+}
+
+function clearCaptureTimer(): void {
+  if (captureTimer) {
+    clearTimeout(captureTimer);
+    captureTimer = null;
+  }
+}
+
+function resolveActiveCaptureContext(): WindowContext | null {
+  if (activeCaptureWindowId === null) {
+    return null;
+  }
+
+  return windowContexts.get(activeCaptureWindowId) ?? null;
+}
+
+function computeNextCaptureTime(now: Date, intervalMin: CaptureIntervalMin): Date {
+  const minute = now.getMinutes();
+  const remainder = minute % intervalMin;
+  const minutesUntilNext = remainder === 0 ? intervalMin : intervalMin - remainder;
+
+  const nextCaptureTime = new Date(now.getTime());
+  nextCaptureTime.setSeconds(0, 0);
+  nextCaptureTime.setMinutes(nextCaptureTime.getMinutes() + minutesUntilNext);
+  nextCaptureTime.setSeconds(CAPTURE_MARGIN_SECONDS, 0);
+  return nextCaptureTime;
+}
+
+function stopPeriodicCapture(options?: { emit?: boolean }): void {
+  clearCaptureTimer();
+  activeCaptureWindowId = null;
+  capturePaused = false;
+  if (options?.emit ?? true) {
+    emitCaptureStateChanged();
+  }
+}
+
+async function captureAndSave(context: WindowContext): Promise<void> {
+  if (context.tradingView.webContents.isDestroyed()) {
+    return;
+  }
+
+  const image = await context.tradingView.webContents.capturePage();
+  const captureFilePath = path.join(settings.captureDirectory, `${settings.captureFileName}.png`);
+  await fs.promises.writeFile(captureFilePath, image.toPNG());
+}
+
+function scheduleNextCapture(): void {
+  clearCaptureTimer();
+  if (activeCaptureWindowId === null || capturePaused) {
+    return;
+  }
+
+  const context = resolveActiveCaptureContext();
+  if (!context) {
+    stopPeriodicCapture();
+    return;
+  }
+
+  const now = new Date();
+  const nextCaptureTime = computeNextCaptureTime(now, settings.captureIntervalMin);
+  const delayMs = Math.max(50, nextCaptureTime.getTime() - now.getTime());
+
+  captureTimer = setTimeout(() => {
+    captureTimer = null;
+    void executeCaptureAndScheduleNext();
+  }, delayMs);
+}
+
+async function executeCaptureAndScheduleNext(): Promise<void> {
+  const context = resolveActiveCaptureContext();
+  if (!context) {
+    stopPeriodicCapture();
+    return;
+  }
+
+  if (capturePaused) {
+    return;
+  }
+
+  try {
+    await captureAndSave(context);
+  } catch (error) {
+    console.error("Failed to capture periodic screenshot:", error);
+  } finally {
+    scheduleNextCapture();
+  }
+}
+
+function setCapturePausedForContext(context: WindowContext, paused: boolean): void {
+  if (activeCaptureWindowId !== context.window.id) {
+    return;
+  }
+
+  const nextPaused = Boolean(paused);
+  if (capturePaused === nextPaused) {
+    return;
+  }
+
+  capturePaused = nextPaused;
+  if (capturePaused) {
+    clearCaptureTimer();
+  } else {
+    scheduleNextCapture();
+  }
+  emitCaptureStateChanged();
+}
+
+function togglePeriodicCapture(context: WindowContext): CaptureToggleResult {
+  if (activeCaptureWindowId === null) {
+    activeCaptureWindowId = context.window.id;
+    capturePaused = context.tradingViewSuspended;
+    if (!capturePaused) {
+      scheduleNextCapture();
+    }
+    emitCaptureStateChanged();
+    return { status: "started" };
+  }
+
+  if (activeCaptureWindowId === context.window.id) {
+    stopPeriodicCapture();
+    return { status: "stopped" };
+  }
+
+  return {
+    status: "blocked",
+    reason: "another-window"
+  };
 }
 
 function isAllowedExternalUrl(rawUrl: string): boolean {
@@ -456,7 +680,8 @@ function createAppWindow(sourceWindowId?: number): BrowserWindow {
     webPreferences: {
       preload: path.join(__dirname, "renderer-preload.js"),
       contextIsolation: true,
-      sandbox: false
+      sandbox: false,
+      backgroundThrottling: false
     }
   };
 
@@ -490,7 +715,8 @@ function createAppWindow(sourceWindowId?: number): BrowserWindow {
     tradingView,
     local,
     latestLayout: null,
-    tradingViewSuspended: false
+    tradingViewSuspended: false,
+    allowCloseAfterCaptureConfirm: false
   };
 
   windowContexts.set(windowRef.id, context);
@@ -521,18 +747,50 @@ function createAppWindow(sourceWindowId?: number): BrowserWindow {
     updateWindowPositionInLocalSettings(context);
   });
 
-  windowRef.on("close", () => {
+  windowRef.on("close", (event) => {
+    const captureEnabledOnThisWindow = activeCaptureWindowId === windowRef.id;
+    if (captureEnabledOnThisWindow && !context.allowCloseAfterCaptureConfirm) {
+      event.preventDefault();
+
+      const choice = dialog.showMessageBoxSync(windowRef, {
+        type: "question",
+        buttons: ["No", "Yes"],
+        defaultId: 0,
+        cancelId: 0,
+        textWidth: 360,
+        message:
+          "Periodic\u00a0Screen\u00a0Capture\u00a0is\u00a0enabled.\nDo\u00a0you\u00a0want\u00a0to\u00a0close\u00a0this\u00a0window\u00a0?"
+      });
+
+      if (choice !== 1) {
+        return;
+      }
+
+      context.allowCloseAfterCaptureConfirm = true;
+      stopPeriodicCapture({ emit: false });
+      emitCaptureStateChanged();
+      windowRef.close();
+      return;
+    }
+
     captureWindowSnapshot(context);
   });
 
   windowRef.on("closed", () => {
+    const wasCaptureEnabledOnThisWindow = activeCaptureWindowId === windowRef.id;
     lastClosedLocalSnapshot = { ...context.local };
     windowContexts.delete(windowRef.id);
+
+    if (wasCaptureEnabledOnThisWindow) {
+      stopPeriodicCapture({ emit: false });
+      emitCaptureStateChanged();
+    }
   });
 
   windowRef.webContents.on("did-finish-load", () => {
     applyWindowAppearance(context, true);
     broadcastLayout(context);
+    emitCaptureStateChanged();
   });
 
   return windowRef;
@@ -580,6 +838,11 @@ function registerIpc(): void {
     createAppWindow(source?.window.id);
   });
 
+  ipcMain.handle("window:get-id", (event) => {
+    const context = requireWindowContext(event);
+    return context.window.id;
+  });
+
   ipcMain.handle("settings:get", (event) => {
     const context = requireWindowContext(event);
     return composeSettings(context);
@@ -590,8 +853,21 @@ function registerIpc(): void {
 
     const nextTheme = sanitizeTheme(patch.theme, settings.theme);
     const nextSiteUrl = sanitizeSiteUrl(patch.siteUrl, settings.siteUrl);
+    const nextCaptureIntervalMin = sanitizeCaptureIntervalMin(
+      patch.captureIntervalMin,
+      settings.captureIntervalMin
+    );
+    const nextCaptureFileName = sanitizeCaptureFileName(
+      patch.captureFileName,
+      settings.captureFileName
+    );
+    const nextCaptureDirectory = sanitizeCaptureDirectory(
+      patch.captureDirectory,
+      settings.captureDirectory
+    );
 
     let globalChanged = false;
+    let captureSettingsChanged = false;
     if (nextTheme !== settings.theme) {
       settings = { ...settings, theme: nextTheme };
       globalChanged = true;
@@ -601,6 +877,24 @@ function registerIpc(): void {
     if (nextSiteUrl !== settings.siteUrl) {
       settings = { ...settings, siteUrl: nextSiteUrl };
       globalChanged = true;
+    }
+
+    if (nextCaptureIntervalMin !== settings.captureIntervalMin) {
+      settings = { ...settings, captureIntervalMin: nextCaptureIntervalMin };
+      globalChanged = true;
+      captureSettingsChanged = true;
+    }
+
+    if (nextCaptureFileName !== settings.captureFileName) {
+      settings = { ...settings, captureFileName: nextCaptureFileName };
+      globalChanged = true;
+      captureSettingsChanged = true;
+    }
+
+    if (nextCaptureDirectory !== settings.captureDirectory) {
+      settings = { ...settings, captureDirectory: nextCaptureDirectory };
+      globalChanged = true;
+      captureSettingsChanged = true;
     }
 
     const localPatchProvided =
@@ -643,6 +937,10 @@ function registerIpc(): void {
 
     if (settings.siteUrl !== previousSiteUrl) {
       loadTradingViewTargets(settings.siteUrl);
+    }
+
+    if (captureSettingsChanged && activeCaptureWindowId !== null && !capturePaused) {
+      scheduleNextCapture();
     }
 
     if (globalChanged) {
@@ -689,7 +987,33 @@ function registerIpc(): void {
   ipcMain.handle("trading-view:set-suspended", (event, suspended: boolean) => {
     const context = requireWindowContext(event);
     context.tradingViewSuspended = Boolean(suspended);
+    setCapturePausedForContext(context, context.tradingViewSuspended);
     broadcastLayout(context);
+  });
+
+  ipcMain.handle("capture:directory:pick", async (event) => {
+    const context = requireWindowContext(event);
+    const { canceled, filePaths } = await dialog.showOpenDialog(context.window, {
+      title: "Select Capture Directory",
+      defaultPath: settings.captureDirectory,
+      properties: ["openDirectory"]
+    });
+
+    if (canceled || filePaths.length === 0) {
+      return null;
+    }
+
+    return sanitizeCaptureDirectory(filePaths[0], settings.captureDirectory);
+  });
+
+  ipcMain.handle("capture:toggle", (event) => {
+    const context = requireWindowContext(event);
+    return togglePeriodicCapture(context);
+  });
+
+  ipcMain.handle("capture:state:get", (event) => {
+    requireWindowContext(event);
+    return composeCaptureState();
   });
 
   ipcMain.handle(
@@ -750,6 +1074,8 @@ void app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
+  stopPeriodicCapture({ emit: false });
+
   if (lastClosedLocalSnapshot) {
     mergeLocalSettingsIntoDefaults(lastClosedLocalSnapshot, { includePosition: true });
     flushSettings();

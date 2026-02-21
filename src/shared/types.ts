@@ -1,5 +1,15 @@
 export type ThemeMode = "dark" | "light";
 export type WidthResizeOrigin = "right" | "left";
+export type CaptureIntervalMin = 1 | 5 | 15 | 30 | 60 | 240;
+
+export interface CaptureState {
+  activeWindowId: number | null;
+}
+
+export interface CaptureToggleResult {
+  status: "started" | "stopped" | "blocked";
+  reason?: "another-window";
+}
 
 export interface AppSettings {
   theme: ThemeMode;
@@ -12,6 +22,9 @@ export interface AppSettings {
   windowX: number | null;
   windowY: number | null;
   widthResizeOrigin: WidthResizeOrigin;
+  captureIntervalMin: CaptureIntervalMin;
+  captureFileName: string;
+  captureDirectory: string;
 }
 
 export interface LayoutMetrics {

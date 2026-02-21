@@ -7,6 +7,8 @@ function mustQuery(selector) {
   return found;
 }
 var clockElement = mustQuery("#clock");
+var periodicCaptureButton = mustQuery("#periodic-capture-button");
+var captureBlockedTooltip = mustQuery("#capture-blocked-tooltip");
 var newWindowButton = mustQuery("#new-window-button");
 var expandWidthButton = mustQuery("#expand-width-button");
 var shrinkWidthButton = mustQuery("#shrink-width-button");
@@ -19,9 +21,23 @@ var themeSelect = mustQuery("#theme-select");
 var alwaysOnTopToggle = mustQuery("#always-on-top-toggle");
 var siteUrlInput = mustQuery("#site-url-input");
 var siteUrlError = mustQuery("#site-url-error");
+var captureFileNameInput = mustQuery("#capture-file-name-input");
+var captureFileNameError = mustQuery("#capture-file-name-error");
+var captureDirectoryInput = mustQuery("#capture-directory-input");
+var captureDirectoryBrowseButton = mustQuery("#capture-directory-browse-button");
+var captureDirectoryError = mustQuery("#capture-directory-error");
 var cardFrame = mustQuery("#card-frame");
 var resizeHandle = mustQuery("#resize-handle");
+var captureIntervalInputs = Array.from(
+  document.querySelectorAll('input[name="capture-interval-min"]')
+);
+if (captureIntervalInputs.length === 0) {
+  throw new Error('Renderer UI bootstrap failed: missing capture interval radios "capture-interval-min".');
+}
 var SITE_URL_MAX_LENGTH = 64;
+var BLOCKED_TOOLTIP_DURATION_MS = 2e3;
+var INVALID_CAPTURE_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001f]/;
+var CAPTURE_INTERVAL_OPTIONS = [1, 5, 15, 30, 60, 240];
 var jstFormatter = new Intl.DateTimeFormat("ja-JP", {
   hour: "2-digit",
   minute: "2-digit",
@@ -30,6 +46,8 @@ var jstFormatter = new Intl.DateTimeFormat("ja-JP", {
 });
 var currentSettings = null;
 var currentLayout = null;
+var currentWindowId = null;
+var blockedTooltipTimer = null;
 var dragState = null;
 var resizeInFlight = false;
 var queuedResize = null;
@@ -38,6 +56,15 @@ function setTheme(theme) {
 }
 function setSiteUrlError(message) {
   siteUrlError.textContent = message;
+}
+function setCaptureFileNameError(message) {
+  captureFileNameError.textContent = message;
+}
+function setCaptureDirectoryError(message) {
+  captureDirectoryError.textContent = message;
+}
+function normalizeCaptureFileName(rawValue) {
+  return rawValue.trim().replace(/(?:\.png)+$/i, "").trim();
 }
 function validateSiteUrl(rawValue) {
   const value = rawValue.trim();
@@ -57,6 +84,23 @@ function validateSiteUrl(rawValue) {
     return { ok: false, message: "Site URL must be a valid URL." };
   }
 }
+function validateCaptureFileName(rawValue) {
+  const normalized = normalizeCaptureFileName(rawValue);
+  if (normalized.length === 0) {
+    return { ok: false, message: "File Name is required." };
+  }
+  if (INVALID_CAPTURE_FILE_NAME_PATTERN.test(normalized)) {
+    return { ok: false, message: "File Name contains invalid characters." };
+  }
+  return { ok: true, value: normalized };
+}
+function normalizeDirectoryForCompare(rawValue) {
+  const trimmed = rawValue.trim();
+  if (trimmed === "/" || trimmed.length === 0) {
+    return trimmed;
+  }
+  return trimmed.replace(/[\\/]+$/, "");
+}
 async function setSettingsModalOpen(isOpen) {
   try {
     await window.desktopApi.setTradingViewSuspended(isOpen);
@@ -69,13 +113,25 @@ function updateClock() {
 }
 function startClockTicker() {
   updateClock();
-  const now = /* @__PURE__ */ new Date();
-  const delayUntilNextMinute = (60 - now.getSeconds()) * 1e3 - now.getMilliseconds();
-  setTimeout(() => {
-    updateClock();
-    setInterval(updateClock, 6e4);
-  }, Math.max(100, delayUntilNextMinute));
+  const scheduleNextTick = () => {
+    const now = /* @__PURE__ */ new Date();
+    const delayUntilNextMinute = 6e4 - (now.getSeconds() * 1e3 + now.getMilliseconds());
+    setTimeout(() => {
+      updateClock();
+      scheduleNextTick();
+    }, Math.max(100, delayUntilNextMinute));
+  };
+  scheduleNextTick();
 }
+function selectedWidthOrigin() {
+  return widthOriginSelect.value === "left" ? "left" : "right";
+}
+function selectedCaptureInterval() {
+  const selected = captureIntervalInputs.find((input) => input.checked);
+  const numericValue = Number(selected?.value ?? DEFAULT_CAPTURE_INTERVAL);
+  return CAPTURE_INTERVAL_OPTIONS.includes(numericValue) ? numericValue : DEFAULT_CAPTURE_INTERVAL;
+}
+var DEFAULT_CAPTURE_INTERVAL = 5;
 function applySettings(nextSettings) {
   currentSettings = nextSettings;
   setTheme(nextSettings.theme);
@@ -83,9 +139,33 @@ function applySettings(nextSettings) {
   themeSelect.value = nextSettings.theme;
   alwaysOnTopToggle.checked = nextSettings.alwaysOnTop;
   siteUrlInput.value = nextSettings.siteUrl;
+  captureFileNameInput.value = nextSettings.captureFileName;
+  captureDirectoryInput.value = nextSettings.captureDirectory;
+  for (const input of captureIntervalInputs) {
+    input.checked = Number(input.value) === nextSettings.captureIntervalMin;
+  }
 }
-function selectedWidthOrigin() {
-  return widthOriginSelect.value === "left" ? "left" : "right";
+function applyCaptureState(nextState) {
+  const activeOnThisWindow = currentWindowId !== null && nextState.activeWindowId === currentWindowId;
+  periodicCaptureButton.setAttribute("aria-pressed", activeOnThisWindow ? "true" : "false");
+}
+function showCaptureBlockedTooltip(message) {
+  captureBlockedTooltip.textContent = message;
+  captureBlockedTooltip.dataset.visible = "true";
+  captureBlockedTooltip.setAttribute("aria-hidden", "false");
+  if (blockedTooltipTimer !== null) {
+    window.clearTimeout(blockedTooltipTimer);
+  }
+  blockedTooltipTimer = window.setTimeout(() => {
+    captureBlockedTooltip.dataset.visible = "false";
+    captureBlockedTooltip.setAttribute("aria-hidden", "true");
+    blockedTooltipTimer = null;
+  }, BLOCKED_TOOLTIP_DURATION_MS);
+}
+function clearSettingsErrors() {
+  setSiteUrlError("");
+  setCaptureFileNameError("");
+  setCaptureDirectoryError("");
 }
 function applyLayout(layout) {
   currentLayout = layout;
@@ -150,6 +230,18 @@ function endResize(event) {
   resizeHandle.releasePointerCapture(event.pointerId);
 }
 function installEvents() {
+  periodicCaptureButton.addEventListener("click", async () => {
+    try {
+      const result = await window.desktopApi.togglePeriodicCapture();
+      if (result.status === "blocked") {
+        showCaptureBlockedTooltip("Capturing on another window");
+        return;
+      }
+      applyCaptureState(await window.desktopApi.getCaptureState());
+    } catch (error) {
+      console.error("Failed to toggle periodic capture:", error);
+    }
+  });
   newWindowButton.addEventListener("click", () => {
     void window.desktopApi.createWindow();
   });
@@ -182,7 +274,7 @@ function installEvents() {
       if (currentSettings) {
         applySettings(currentSettings);
       }
-      setSiteUrlError("");
+      clearSettingsErrors();
       void setSettingsModalOpen(true).then(() => {
         try {
           settingsDialog.showModal();
@@ -197,15 +289,41 @@ function installEvents() {
   });
   settingsDialog.addEventListener("close", () => {
     void setSettingsModalOpen(false);
-    setSiteUrlError("");
+    clearSettingsErrors();
     if (currentSettings) {
       applySettings(currentSettings);
+    }
+  });
+  window.addEventListener("focus", () => {
+    updateClock();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      updateClock();
     }
   });
   siteUrlInput.addEventListener("input", () => {
     if (siteUrlError.textContent) {
       setSiteUrlError("");
     }
+  });
+  captureFileNameInput.addEventListener("input", () => {
+    if (captureFileNameError.textContent) {
+      setCaptureFileNameError("");
+    }
+  });
+  captureDirectoryInput.addEventListener("input", () => {
+    if (captureDirectoryError.textContent) {
+      setCaptureDirectoryError("");
+    }
+  });
+  captureDirectoryBrowseButton.addEventListener("click", async () => {
+    const selected = await window.desktopApi.pickCaptureDirectory();
+    if (!selected) {
+      return;
+    }
+    captureDirectoryInput.value = selected;
+    setCaptureDirectoryError("");
   });
   settingsForm.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -214,13 +332,42 @@ function installEvents() {
       setSiteUrlError(siteUrlResult.message);
       return;
     }
+    const captureFileNameResult = validateCaptureFileName(captureFileNameInput.value);
+    if (!captureFileNameResult.ok) {
+      setCaptureFileNameError(captureFileNameResult.message);
+      return;
+    }
+    const captureDirectory = captureDirectoryInput.value.trim();
+    if (captureDirectory.length === 0) {
+      setCaptureDirectoryError("Download directory is required.");
+      return;
+    }
+    if (!captureDirectory.startsWith("/")) {
+      setCaptureDirectoryError("Download directory must be an absolute path.");
+      return;
+    }
     try {
-      setSiteUrlError("");
+      clearSettingsErrors();
       const theme = themeSelect.value === "light" ? "light" : "dark";
       const updated = await window.desktopApi.updateSettings({
         theme,
-        siteUrl: siteUrlResult.value
+        siteUrl: siteUrlResult.value,
+        captureIntervalMin: selectedCaptureInterval(),
+        captureFileName: captureFileNameResult.value,
+        captureDirectory
       });
+      const requestedDirectory = normalizeDirectoryForCompare(captureDirectory);
+      const updatedDirectory = normalizeDirectoryForCompare(updated.captureDirectory);
+      if (requestedDirectory !== updatedDirectory) {
+        setCaptureDirectoryError("Download directory must be an existing directory.");
+        applySettings(updated);
+        return;
+      }
+      if (updated.captureFileName !== captureFileNameResult.value) {
+        setCaptureFileNameError("File Name contains invalid characters.");
+        applySettings(updated);
+        return;
+      }
       applySettings(updated);
       settingsDialog.close();
     } catch {
@@ -235,11 +382,15 @@ function installEvents() {
 async function bootstrap() {
   installEvents();
   startClockTicker();
-  const [settings, layout] = await Promise.all([
+  const [windowId, settings, layout, captureState] = await Promise.all([
+    window.desktopApi.getWindowId(),
     window.desktopApi.getSettings(),
-    window.desktopApi.getLayout()
+    window.desktopApi.getLayout(),
+    window.desktopApi.getCaptureState()
   ]);
+  currentWindowId = windowId;
   applySettings(settings);
+  applyCaptureState(captureState);
   if (layout) {
     applyLayout(layout);
   }
@@ -248,6 +399,9 @@ async function bootstrap() {
   });
   window.desktopApi.onSettingsChanged((nextSettings) => {
     applySettings(nextSettings);
+  });
+  window.desktopApi.onCaptureStateChanged((nextState) => {
+    applyCaptureState(nextState);
   });
 }
 void bootstrap();
