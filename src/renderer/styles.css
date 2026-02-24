@@ -98,6 +98,7 @@ body {
 
 #new-window-button,
 #periodic-capture-button,
+#toggle-width-button,
 #open-settings-button {
   width: 30px;
   min-width: 30px;
@@ -123,6 +124,7 @@ body {
 
 #new-window-button:hover,
 #periodic-capture-button:hover,
+#toggle-width-button:hover,
 #open-settings-button:hover,
 .settings-actions button:hover {
   color: var(--text);
@@ -130,7 +132,8 @@ body {
   background: color-mix(in srgb, var(--surface) 65%, transparent);
 }
 
-#periodic-capture-button[aria-pressed="true"] {
+#periodic-capture-button[aria-pressed="true"],
+#toggle-width-button[aria-pressed="true"] {
   background: color-mix(in srgb, var(--text) 85%, #000 15%);
   color: color-mix(in srgb, var(--surface) 92%, #000 8%);
   border-color: color-mix(in srgb, var(--text) 82%, #000 18%);
@@ -263,10 +266,32 @@ body {
 }
 
 .file-name-row,
+.display-width-row,
 .download-directory-row {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+
+.display-width-row {
+  flex-wrap: nowrap;
+  gap: 8px 12px;
+}
+
+.display-width-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.display-width-item input[type="text"] {
+  width: 72px;
+  min-width: 72px;
+  flex: 0 0 72px;
 }
 
 .file-name-row input {
@@ -309,6 +334,7 @@ body {
 
 #capture-file-name-error,
 #capture-directory-error,
+#display-width-error,
 #site-url-error {
   margin: 0;
   min-height: 16px;
@@ -355,33 +381,4 @@ body {
   border: 1px solid var(--border);
   box-shadow: 0 12px 38px rgba(0, 0, 0, 0.23);
   pointer-events: none;
-}
-
-#resize-handle {
-  position: absolute;
-  right: 1px;
-  bottom: 1px;
-  border: 0;
-  background: transparent;
-  cursor: nwse-resize;
-  pointer-events: auto;
-}
-
-#resize-handle::before {
-  content: "";
-  position: absolute;
-  right: 2px;
-  bottom: 2px;
-  width: 0;
-  height: 0;
-  border-left: 10px solid transparent;
-  border-top: 10px solid transparent;
-  border-right: 10px solid color-mix(in srgb, var(--handle) 70%, transparent);
-  border-bottom: 10px solid color-mix(in srgb, var(--handle) 70%, transparent);
-  opacity: 0.42;
-  transition: opacity 120ms ease;
-}
-
-#resize-handle:hover::before {
-  opacity: 0.8;
 }

@@ -10,8 +10,7 @@ var clockElement = mustQuery("#clock");
 var periodicCaptureButton = mustQuery("#periodic-capture-button");
 var captureBlockedTooltip = mustQuery("#capture-blocked-tooltip");
 var newWindowButton = mustQuery("#new-window-button");
-var expandWidthButton = mustQuery("#expand-width-button");
-var shrinkWidthButton = mustQuery("#shrink-width-button");
+var toggleWidthButton = mustQuery("#toggle-width-button");
 var widthOriginSelect = mustQuery("#width-origin-select");
 var openSettingsButton = mustQuery("#open-settings-button");
 var settingsDialog = mustQuery("#settings-dialog");
@@ -20,14 +19,16 @@ var settingsCancelButton = mustQuery("#settings-cancel-button");
 var themeSelect = mustQuery("#theme-select");
 var alwaysOnTopToggle = mustQuery("#always-on-top-toggle");
 var siteUrlInput = mustQuery("#site-url-input");
+var wideModeWidthInput = mustQuery("#wide-mode-width-input");
+var narrowModeWidthInput = mustQuery("#narrow-mode-width-input");
 var siteUrlError = mustQuery("#site-url-error");
+var displayWidthError = mustQuery("#display-width-error");
 var captureFileNameInput = mustQuery("#capture-file-name-input");
 var captureFileNameError = mustQuery("#capture-file-name-error");
 var captureDirectoryInput = mustQuery("#capture-directory-input");
 var captureDirectoryBrowseButton = mustQuery("#capture-directory-browse-button");
 var captureDirectoryError = mustQuery("#capture-directory-error");
 var cardFrame = mustQuery("#card-frame");
-var resizeHandle = mustQuery("#resize-handle");
 var captureIntervalInputs = Array.from(
   document.querySelectorAll('input[name="capture-interval-min"]')
 );
@@ -38,6 +39,9 @@ var SITE_URL_MAX_LENGTH = 64;
 var BLOCKED_TOOLTIP_DURATION_MS = 2e3;
 var INVALID_CAPTURE_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001f]/;
 var CAPTURE_INTERVAL_OPTIONS = [1, 5, 15, 30, 60, 240];
+var DEFAULT_WIDE_MODE_WIDTH = 1920;
+var DEFAULT_NARROW_MODE_WIDTH = 425;
+var MIN_DISPLAY_MODE_WIDTH = 320;
 var jstFormatter = new Intl.DateTimeFormat("ja-JP", {
   hour: "2-digit",
   minute: "2-digit",
@@ -45,17 +49,16 @@ var jstFormatter = new Intl.DateTimeFormat("ja-JP", {
   timeZone: "Asia/Tokyo"
 });
 var currentSettings = null;
-var currentLayout = null;
 var currentWindowId = null;
 var blockedTooltipTimer = null;
-var dragState = null;
-var resizeInFlight = false;
-var queuedResize = null;
 function setTheme(theme) {
   document.body.dataset.theme = theme;
 }
 function setSiteUrlError(message) {
   siteUrlError.textContent = message;
+}
+function setDisplayWidthError(message) {
+  displayWidthError.textContent = message;
 }
 function setCaptureFileNameError(message) {
   captureFileNameError.textContent = message;
@@ -93,6 +96,31 @@ function validateCaptureFileName(rawValue) {
     return { ok: false, message: "File Name contains invalid characters." };
   }
   return { ok: true, value: normalized };
+}
+function validateDisplayWidths(rawWideValue, rawNarrowValue) {
+  const wideText = rawWideValue.trim();
+  const narrowText = rawNarrowValue.trim();
+  if (wideText.length === 0 || narrowText.length === 0) {
+    return { ok: false, message: "Display Width values are required." };
+  }
+  if (!/^\d+$/.test(wideText) || !/^\d+$/.test(narrowText)) {
+    return { ok: false, message: "Display Width values must be integers." };
+  }
+  const wideModeWidth = Number(wideText);
+  const narrowModeWidth = Number(narrowText);
+  if (!Number.isSafeInteger(wideModeWidth) || !Number.isSafeInteger(narrowModeWidth)) {
+    return { ok: false, message: "Display Width values must be valid integers." };
+  }
+  if (wideModeWidth < MIN_DISPLAY_MODE_WIDTH || narrowModeWidth < MIN_DISPLAY_MODE_WIDTH) {
+    return {
+      ok: false,
+      message: `Display Width values must be ${MIN_DISPLAY_MODE_WIDTH}px or greater.`
+    };
+  }
+  if (wideModeWidth <= narrowModeWidth) {
+    return { ok: false, message: "wide mode must be greater than narrow mode." };
+  }
+  return { ok: true, wideModeWidth, narrowModeWidth };
 }
 function normalizeDirectoryForCompare(rawValue) {
   const trimmed = rawValue.trim();
@@ -132,6 +160,33 @@ function selectedCaptureInterval() {
   return CAPTURE_INTERVAL_OPTIONS.includes(numericValue) ? numericValue : DEFAULT_CAPTURE_INTERVAL;
 }
 var DEFAULT_CAPTURE_INTERVAL = 5;
+function currentDisplayWidthPresets() {
+  return {
+    wideModeWidth: currentSettings?.wideModeWidth ?? DEFAULT_WIDE_MODE_WIDTH,
+    narrowModeWidth: currentSettings?.narrowModeWidth ?? DEFAULT_NARROW_MODE_WIDTH
+  };
+}
+function resolveWidthToggleTarget(windowWidth) {
+  const { wideModeWidth, narrowModeWidth } = currentDisplayWidthPresets();
+  return windowWidth === wideModeWidth ? narrowModeWidth : wideModeWidth;
+}
+function currentWindowWidthForToggle() {
+  const actualWidth = Math.round(window.innerWidth);
+  if (actualWidth > 0) {
+    return actualWidth;
+  }
+  const { narrowModeWidth } = currentDisplayWidthPresets();
+  return currentSettings?.windowWidth ?? narrowModeWidth;
+}
+function applyWidthToggleButtonState(windowWidth) {
+  const { wideModeWidth } = currentDisplayWidthPresets();
+  const isWide = windowWidth === wideModeWidth;
+  const nextWidth = resolveWidthToggleTarget(windowWidth);
+  const title = `Set width to ${nextWidth}`;
+  toggleWidthButton.setAttribute("aria-pressed", isWide ? "true" : "false");
+  toggleWidthButton.title = title;
+  toggleWidthButton.setAttribute("aria-label", `Toggle Window Width (${title})`);
+}
 function applySettings(nextSettings) {
   currentSettings = nextSettings;
   setTheme(nextSettings.theme);
@@ -139,11 +194,14 @@ function applySettings(nextSettings) {
   themeSelect.value = nextSettings.theme;
   alwaysOnTopToggle.checked = nextSettings.alwaysOnTop;
   siteUrlInput.value = nextSettings.siteUrl;
+  wideModeWidthInput.value = String(nextSettings.wideModeWidth);
+  narrowModeWidthInput.value = String(nextSettings.narrowModeWidth);
   captureFileNameInput.value = nextSettings.captureFileName;
   captureDirectoryInput.value = nextSettings.captureDirectory;
   for (const input of captureIntervalInputs) {
     input.checked = Number(input.value) === nextSettings.captureIntervalMin;
   }
+  applyWidthToggleButtonState(nextSettings.windowWidth);
 }
 function applyCaptureState(nextState) {
   const activeOnThisWindow = currentWindowId !== null && nextState.activeWindowId === currentWindowId;
@@ -164,70 +222,15 @@ function showCaptureBlockedTooltip(message) {
 }
 function clearSettingsErrors() {
   setSiteUrlError("");
+  setDisplayWidthError("");
   setCaptureFileNameError("");
   setCaptureDirectoryError("");
 }
 function applyLayout(layout) {
-  currentLayout = layout;
   cardFrame.style.left = `${layout.cardX}px`;
   cardFrame.style.top = `${layout.cardY}px`;
   cardFrame.style.width = `${layout.cardWidth}px`;
   cardFrame.style.height = `${layout.cardHeight}px`;
-  resizeHandle.style.width = `${layout.handleSize}px`;
-  resizeHandle.style.height = `${layout.handleSize}px`;
-}
-async function submitQueuedResize() {
-  if (resizeInFlight || !queuedResize) {
-    return;
-  }
-  resizeInFlight = true;
-  const payload = queuedResize;
-  queuedResize = null;
-  try {
-    const updatedSettings = await window.desktopApi.resizeCard(payload);
-    applySettings(updatedSettings);
-  } finally {
-    resizeInFlight = false;
-    if (queuedResize) {
-      void submitQueuedResize();
-    }
-  }
-}
-function queueResize(width, height) {
-  queuedResize = {
-    width: Math.max(1, Math.round(width)),
-    height: Math.max(1, Math.round(height))
-  };
-  void submitQueuedResize();
-}
-function startResize(event) {
-  if (!currentLayout) {
-    return;
-  }
-  dragState = {
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    startWidth: currentLayout.cardWidth,
-    startHeight: currentLayout.cardHeight
-  };
-  resizeHandle.setPointerCapture(event.pointerId);
-  event.preventDefault();
-}
-function continueResize(event) {
-  if (!dragState || dragState.pointerId !== event.pointerId) {
-    return;
-  }
-  const width = dragState.startWidth + (event.clientX - dragState.startX);
-  const height = dragState.startHeight + (event.clientY - dragState.startY);
-  queueResize(width, height);
-}
-function endResize(event) {
-  if (!dragState || dragState.pointerId !== event.pointerId) {
-    return;
-  }
-  dragState = null;
-  resizeHandle.releasePointerCapture(event.pointerId);
 }
 function installEvents() {
   periodicCaptureButton.addEventListener("click", async () => {
@@ -245,15 +248,10 @@ function installEvents() {
   newWindowButton.addEventListener("click", () => {
     void window.desktopApi.createWindow();
   });
-  expandWidthButton.addEventListener("click", () => {
+  toggleWidthButton.addEventListener("click", () => {
+    const width = resolveWidthToggleTarget(currentWindowWidthForToggle());
     void window.desktopApi.setWindowWidth({
-      width: 1920,
-      origin: selectedWidthOrigin()
-    });
-  });
-  shrinkWidthButton.addEventListener("click", () => {
-    void window.desktopApi.setWindowWidth({
-      width: 425,
+      width,
       origin: selectedWidthOrigin()
     });
   });
@@ -297,6 +295,9 @@ function installEvents() {
   window.addEventListener("focus", () => {
     updateClock();
   });
+  window.addEventListener("resize", () => {
+    applyWidthToggleButtonState(currentWindowWidthForToggle());
+  });
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       updateClock();
@@ -305,6 +306,16 @@ function installEvents() {
   siteUrlInput.addEventListener("input", () => {
     if (siteUrlError.textContent) {
       setSiteUrlError("");
+    }
+  });
+  wideModeWidthInput.addEventListener("input", () => {
+    if (displayWidthError.textContent) {
+      setDisplayWidthError("");
+    }
+  });
+  narrowModeWidthInput.addEventListener("input", () => {
+    if (displayWidthError.textContent) {
+      setDisplayWidthError("");
     }
   });
   captureFileNameInput.addEventListener("input", () => {
@@ -332,6 +343,11 @@ function installEvents() {
       setSiteUrlError(siteUrlResult.message);
       return;
     }
+    const displayWidthsResult = validateDisplayWidths(wideModeWidthInput.value, narrowModeWidthInput.value);
+    if (!displayWidthsResult.ok) {
+      setDisplayWidthError(displayWidthsResult.message);
+      return;
+    }
     const captureFileNameResult = validateCaptureFileName(captureFileNameInput.value);
     if (!captureFileNameResult.ok) {
       setCaptureFileNameError(captureFileNameResult.message);
@@ -352,6 +368,8 @@ function installEvents() {
       const updated = await window.desktopApi.updateSettings({
         theme,
         siteUrl: siteUrlResult.value,
+        wideModeWidth: displayWidthsResult.wideModeWidth,
+        narrowModeWidth: displayWidthsResult.narrowModeWidth,
         captureIntervalMin: selectedCaptureInterval(),
         captureFileName: captureFileNameResult.value,
         captureDirectory
@@ -374,10 +392,6 @@ function installEvents() {
       setSiteUrlError("Failed to save settings.");
     }
   });
-  resizeHandle.addEventListener("pointerdown", startResize);
-  resizeHandle.addEventListener("pointermove", continueResize);
-  resizeHandle.addEventListener("pointerup", endResize);
-  resizeHandle.addEventListener("pointercancel", endResize);
 }
 async function bootstrap() {
   installEvents();

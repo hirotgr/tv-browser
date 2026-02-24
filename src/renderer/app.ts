@@ -19,8 +19,7 @@ const clockElement = mustQuery<HTMLSpanElement>("#clock");
 const periodicCaptureButton = mustQuery<HTMLButtonElement>("#periodic-capture-button");
 const captureBlockedTooltip = mustQuery<HTMLSpanElement>("#capture-blocked-tooltip");
 const newWindowButton = mustQuery<HTMLButtonElement>("#new-window-button");
-const expandWidthButton = mustQuery<HTMLButtonElement>("#expand-width-button");
-const shrinkWidthButton = mustQuery<HTMLButtonElement>("#shrink-width-button");
+const toggleWidthButton = mustQuery<HTMLButtonElement>("#toggle-width-button");
 const widthOriginSelect = mustQuery<HTMLSelectElement>("#width-origin-select");
 const openSettingsButton = mustQuery<HTMLButtonElement>("#open-settings-button");
 const settingsDialog = mustQuery<HTMLDialogElement>("#settings-dialog");
@@ -29,14 +28,16 @@ const settingsCancelButton = mustQuery<HTMLButtonElement>("#settings-cancel-butt
 const themeSelect = mustQuery<HTMLSelectElement>("#theme-select");
 const alwaysOnTopToggle = mustQuery<HTMLInputElement>("#always-on-top-toggle");
 const siteUrlInput = mustQuery<HTMLInputElement>("#site-url-input");
+const wideModeWidthInput = mustQuery<HTMLInputElement>("#wide-mode-width-input");
+const narrowModeWidthInput = mustQuery<HTMLInputElement>("#narrow-mode-width-input");
 const siteUrlError = mustQuery<HTMLParagraphElement>("#site-url-error");
+const displayWidthError = mustQuery<HTMLParagraphElement>("#display-width-error");
 const captureFileNameInput = mustQuery<HTMLInputElement>("#capture-file-name-input");
 const captureFileNameError = mustQuery<HTMLParagraphElement>("#capture-file-name-error");
 const captureDirectoryInput = mustQuery<HTMLInputElement>("#capture-directory-input");
 const captureDirectoryBrowseButton = mustQuery<HTMLButtonElement>("#capture-directory-browse-button");
 const captureDirectoryError = mustQuery<HTMLParagraphElement>("#capture-directory-error");
 const cardFrame = mustQuery<HTMLElement>("#card-frame");
-const resizeHandle = mustQuery<HTMLButtonElement>("#resize-handle");
 const captureIntervalInputs = Array.from(
   document.querySelectorAll<HTMLInputElement>('input[name="capture-interval-min"]')
 );
@@ -49,6 +50,9 @@ const SITE_URL_MAX_LENGTH = 64;
 const BLOCKED_TOOLTIP_DURATION_MS = 2_000;
 const INVALID_CAPTURE_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001f]/;
 const CAPTURE_INTERVAL_OPTIONS: readonly CaptureIntervalMin[] = [1, 5, 15, 30, 60, 240];
+const DEFAULT_WIDE_MODE_WIDTH = 1920;
+const DEFAULT_NARROW_MODE_WIDTH = 425;
+const MIN_DISPLAY_MODE_WIDTH = 320;
 
 const jstFormatter = new Intl.DateTimeFormat("ja-JP", {
   hour: "2-digit",
@@ -58,21 +62,8 @@ const jstFormatter = new Intl.DateTimeFormat("ja-JP", {
 });
 
 let currentSettings: AppSettings | null = null;
-let currentLayout: LayoutMetrics | null = null;
 let currentWindowId: number | null = null;
 let blockedTooltipTimer: number | null = null;
-
-interface ResizeDragState {
-  pointerId: number;
-  startX: number;
-  startY: number;
-  startWidth: number;
-  startHeight: number;
-}
-
-let dragState: ResizeDragState | null = null;
-let resizeInFlight = false;
-let queuedResize: { width: number; height: number } | null = null;
 
 function setTheme(theme: ThemeMode): void {
   document.body.dataset.theme = theme;
@@ -80,6 +71,10 @@ function setTheme(theme: ThemeMode): void {
 
 function setSiteUrlError(message: string): void {
   siteUrlError.textContent = message;
+}
+
+function setDisplayWidthError(message: string): void {
+  displayWidthError.textContent = message;
 }
 
 function setCaptureFileNameError(message: string): void {
@@ -128,6 +123,43 @@ function validateCaptureFileName(
   }
 
   return { ok: true, value: normalized };
+}
+
+function validateDisplayWidths(
+  rawWideValue: string,
+  rawNarrowValue: string
+):
+  | { ok: true; wideModeWidth: number; narrowModeWidth: number }
+  | { ok: false; message: string } {
+  const wideText = rawWideValue.trim();
+  const narrowText = rawNarrowValue.trim();
+
+  if (wideText.length === 0 || narrowText.length === 0) {
+    return { ok: false, message: "Display Width values are required." };
+  }
+
+  if (!/^\d+$/.test(wideText) || !/^\d+$/.test(narrowText)) {
+    return { ok: false, message: "Display Width values must be integers." };
+  }
+
+  const wideModeWidth = Number(wideText);
+  const narrowModeWidth = Number(narrowText);
+  if (!Number.isSafeInteger(wideModeWidth) || !Number.isSafeInteger(narrowModeWidth)) {
+    return { ok: false, message: "Display Width values must be valid integers." };
+  }
+
+  if (wideModeWidth < MIN_DISPLAY_MODE_WIDTH || narrowModeWidth < MIN_DISPLAY_MODE_WIDTH) {
+    return {
+      ok: false,
+      message: `Display Width values must be ${MIN_DISPLAY_MODE_WIDTH}px or greater.`
+    };
+  }
+
+  if (wideModeWidth <= narrowModeWidth) {
+    return { ok: false, message: "wide mode must be greater than narrow mode." };
+  }
+
+  return { ok: true, wideModeWidth, narrowModeWidth };
 }
 
 function normalizeDirectoryForCompare(rawValue: string): string {
@@ -179,6 +211,38 @@ function selectedCaptureInterval(): CaptureIntervalMin {
 
 const DEFAULT_CAPTURE_INTERVAL: CaptureIntervalMin = 5;
 
+function currentDisplayWidthPresets(): { wideModeWidth: number; narrowModeWidth: number } {
+  return {
+    wideModeWidth: currentSettings?.wideModeWidth ?? DEFAULT_WIDE_MODE_WIDTH,
+    narrowModeWidth: currentSettings?.narrowModeWidth ?? DEFAULT_NARROW_MODE_WIDTH
+  };
+}
+
+function resolveWidthToggleTarget(windowWidth: number): number {
+  const { wideModeWidth, narrowModeWidth } = currentDisplayWidthPresets();
+  return windowWidth === wideModeWidth ? narrowModeWidth : wideModeWidth;
+}
+
+function currentWindowWidthForToggle(): number {
+  const actualWidth = Math.round(window.innerWidth);
+  if (actualWidth > 0) {
+    return actualWidth;
+  }
+  const { narrowModeWidth } = currentDisplayWidthPresets();
+  return currentSettings?.windowWidth ?? narrowModeWidth;
+}
+
+function applyWidthToggleButtonState(windowWidth: number): void {
+  const { wideModeWidth } = currentDisplayWidthPresets();
+  const isWide = windowWidth === wideModeWidth;
+  const nextWidth = resolveWidthToggleTarget(windowWidth);
+  const title = `Set width to ${nextWidth}`;
+
+  toggleWidthButton.setAttribute("aria-pressed", isWide ? "true" : "false");
+  toggleWidthButton.title = title;
+  toggleWidthButton.setAttribute("aria-label", `Toggle Window Width (${title})`);
+}
+
 function applySettings(nextSettings: AppSettings): void {
   currentSettings = nextSettings;
   setTheme(nextSettings.theme);
@@ -186,12 +250,16 @@ function applySettings(nextSettings: AppSettings): void {
   themeSelect.value = nextSettings.theme;
   alwaysOnTopToggle.checked = nextSettings.alwaysOnTop;
   siteUrlInput.value = nextSettings.siteUrl;
+  wideModeWidthInput.value = String(nextSettings.wideModeWidth);
+  narrowModeWidthInput.value = String(nextSettings.narrowModeWidth);
   captureFileNameInput.value = nextSettings.captureFileName;
   captureDirectoryInput.value = nextSettings.captureDirectory;
 
   for (const input of captureIntervalInputs) {
     input.checked = Number(input.value) === nextSettings.captureIntervalMin;
   }
+
+  applyWidthToggleButtonState(nextSettings.windowWidth);
 }
 
 function applyCaptureState(nextState: CaptureState): void {
@@ -217,82 +285,16 @@ function showCaptureBlockedTooltip(message: string): void {
 
 function clearSettingsErrors(): void {
   setSiteUrlError("");
+  setDisplayWidthError("");
   setCaptureFileNameError("");
   setCaptureDirectoryError("");
 }
 
 function applyLayout(layout: LayoutMetrics): void {
-  currentLayout = layout;
-
   cardFrame.style.left = `${layout.cardX}px`;
   cardFrame.style.top = `${layout.cardY}px`;
   cardFrame.style.width = `${layout.cardWidth}px`;
   cardFrame.style.height = `${layout.cardHeight}px`;
-
-  resizeHandle.style.width = `${layout.handleSize}px`;
-  resizeHandle.style.height = `${layout.handleSize}px`;
-}
-
-async function submitQueuedResize(): Promise<void> {
-  if (resizeInFlight || !queuedResize) {
-    return;
-  }
-
-  resizeInFlight = true;
-  const payload = queuedResize;
-  queuedResize = null;
-
-  try {
-    const updatedSettings = await window.desktopApi.resizeCard(payload);
-    applySettings(updatedSettings);
-  } finally {
-    resizeInFlight = false;
-    if (queuedResize) {
-      void submitQueuedResize();
-    }
-  }
-}
-
-function queueResize(width: number, height: number): void {
-  queuedResize = {
-    width: Math.max(1, Math.round(width)),
-    height: Math.max(1, Math.round(height))
-  };
-  void submitQueuedResize();
-}
-
-function startResize(event: PointerEvent): void {
-  if (!currentLayout) {
-    return;
-  }
-
-  dragState = {
-    pointerId: event.pointerId,
-    startX: event.clientX,
-    startY: event.clientY,
-    startWidth: currentLayout.cardWidth,
-    startHeight: currentLayout.cardHeight
-  };
-  resizeHandle.setPointerCapture(event.pointerId);
-  event.preventDefault();
-}
-
-function continueResize(event: PointerEvent): void {
-  if (!dragState || dragState.pointerId !== event.pointerId) {
-    return;
-  }
-
-  const width = dragState.startWidth + (event.clientX - dragState.startX);
-  const height = dragState.startHeight + (event.clientY - dragState.startY);
-  queueResize(width, height);
-}
-
-function endResize(event: PointerEvent): void {
-  if (!dragState || dragState.pointerId !== event.pointerId) {
-    return;
-  }
-  dragState = null;
-  resizeHandle.releasePointerCapture(event.pointerId);
 }
 
 function installEvents(): void {
@@ -314,16 +316,10 @@ function installEvents(): void {
     void window.desktopApi.createWindow();
   });
 
-  expandWidthButton.addEventListener("click", () => {
+  toggleWidthButton.addEventListener("click", () => {
+    const width = resolveWidthToggleTarget(currentWindowWidthForToggle());
     void window.desktopApi.setWindowWidth({
-      width: 1920,
-      origin: selectedWidthOrigin()
-    });
-  });
-
-  shrinkWidthButton.addEventListener("click", () => {
-    void window.desktopApi.setWindowWidth({
-      width: 425,
+      width,
       origin: selectedWidthOrigin()
     });
   });
@@ -374,6 +370,10 @@ function installEvents(): void {
     updateClock();
   });
 
+  window.addEventListener("resize", () => {
+    applyWidthToggleButtonState(currentWindowWidthForToggle());
+  });
+
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") {
       updateClock();
@@ -383,6 +383,18 @@ function installEvents(): void {
   siteUrlInput.addEventListener("input", () => {
     if (siteUrlError.textContent) {
       setSiteUrlError("");
+    }
+  });
+
+  wideModeWidthInput.addEventListener("input", () => {
+    if (displayWidthError.textContent) {
+      setDisplayWidthError("");
+    }
+  });
+
+  narrowModeWidthInput.addEventListener("input", () => {
+    if (displayWidthError.textContent) {
+      setDisplayWidthError("");
     }
   });
 
@@ -416,6 +428,12 @@ function installEvents(): void {
       return;
     }
 
+    const displayWidthsResult = validateDisplayWidths(wideModeWidthInput.value, narrowModeWidthInput.value);
+    if (!displayWidthsResult.ok) {
+      setDisplayWidthError(displayWidthsResult.message);
+      return;
+    }
+
     const captureFileNameResult = validateCaptureFileName(captureFileNameInput.value);
     if (!captureFileNameResult.ok) {
       setCaptureFileNameError(captureFileNameResult.message);
@@ -438,6 +456,8 @@ function installEvents(): void {
       const updated = await window.desktopApi.updateSettings({
         theme,
         siteUrl: siteUrlResult.value,
+        wideModeWidth: displayWidthsResult.wideModeWidth,
+        narrowModeWidth: displayWidthsResult.narrowModeWidth,
         captureIntervalMin: selectedCaptureInterval(),
         captureFileName: captureFileNameResult.value,
         captureDirectory
@@ -463,11 +483,6 @@ function installEvents(): void {
       setSiteUrlError("Failed to save settings.");
     }
   });
-
-  resizeHandle.addEventListener("pointerdown", startResize);
-  resizeHandle.addEventListener("pointermove", continueResize);
-  resizeHandle.addEventListener("pointerup", endResize);
-  resizeHandle.addEventListener("pointercancel", endResize);
 }
 
 async function bootstrap(): Promise<void> {

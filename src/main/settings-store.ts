@@ -5,6 +5,7 @@ import type { AppSettings, CaptureIntervalMin } from "../shared/types";
 
 const SETTINGS_FILE_NAME = "settings.json";
 const MAX_SITE_URL_LENGTH = 64;
+const MIN_DISPLAY_MODE_WIDTH = 320;
 const CAPTURE_INTERVAL_VALUES: readonly CaptureIntervalMin[] = [1, 5, 15, 30, 60, 240];
 const INVALID_CAPTURE_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001f]/;
 const DEFAULT_CAPTURE_DIRECTORY = path.join(os.homedir(), "Downloads");
@@ -22,11 +23,60 @@ export const DEFAULT_SETTINGS: AppSettings = {
   widthResizeOrigin: "right",
   captureIntervalMin: 5,
   captureFileName: "capture",
-  captureDirectory: DEFAULT_CAPTURE_DIRECTORY
+  captureDirectory: DEFAULT_CAPTURE_DIRECTORY,
+  wideModeWidth: 1920,
+  narrowModeWidth: 425
 };
 
 function asFiniteNumber(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function asPositiveInteger(value: unknown, fallback: number, minimum = 1): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  const rounded = Math.round(value);
+  return rounded >= minimum ? rounded : fallback;
+}
+
+function asDisplayModeWidths(
+  wideValue: unknown,
+  narrowValue: unknown,
+  fallbackWide: number,
+  fallbackNarrow: number
+): Pick<AppSettings, "wideModeWidth" | "narrowModeWidth"> {
+  let safeFallbackWide = asPositiveInteger(
+    fallbackWide,
+    DEFAULT_SETTINGS.wideModeWidth,
+    MIN_DISPLAY_MODE_WIDTH
+  );
+  let safeFallbackNarrow = asPositiveInteger(
+    fallbackNarrow,
+    DEFAULT_SETTINGS.narrowModeWidth,
+    MIN_DISPLAY_MODE_WIDTH
+  );
+
+  if (safeFallbackWide <= safeFallbackNarrow) {
+    safeFallbackWide = DEFAULT_SETTINGS.wideModeWidth;
+    safeFallbackNarrow = DEFAULT_SETTINGS.narrowModeWidth;
+  }
+
+  const wideModeWidth = asPositiveInteger(wideValue, safeFallbackWide, MIN_DISPLAY_MODE_WIDTH);
+  const narrowModeWidth = asPositiveInteger(narrowValue, safeFallbackNarrow, MIN_DISPLAY_MODE_WIDTH);
+
+  if (wideModeWidth <= narrowModeWidth) {
+    return {
+      wideModeWidth: safeFallbackWide,
+      narrowModeWidth: safeFallbackNarrow
+    };
+  }
+
+  return {
+    wideModeWidth,
+    narrowModeWidth
+  };
 }
 
 function asNullableCoordinate(value: unknown, fallback: number | null): number | null {
@@ -116,6 +166,13 @@ function asSiteUrl(value: unknown, fallback: string): string {
 }
 
 function sanitize(raw: Partial<AppSettings>): AppSettings {
+  const displayModeWidths = asDisplayModeWidths(
+    raw.wideModeWidth,
+    raw.narrowModeWidth,
+    DEFAULT_SETTINGS.wideModeWidth,
+    DEFAULT_SETTINGS.narrowModeWidth
+  );
+
   return {
     theme: asTheme(raw.theme, DEFAULT_SETTINGS.theme),
     alwaysOnTop: asBoolean(raw.alwaysOnTop, DEFAULT_SETTINGS.alwaysOnTop),
@@ -129,7 +186,9 @@ function sanitize(raw: Partial<AppSettings>): AppSettings {
     widthResizeOrigin: asWidthResizeOrigin(raw.widthResizeOrigin, DEFAULT_SETTINGS.widthResizeOrigin),
     captureIntervalMin: asCaptureIntervalMin(raw.captureIntervalMin, DEFAULT_SETTINGS.captureIntervalMin),
     captureFileName: asCaptureFileName(raw.captureFileName, DEFAULT_SETTINGS.captureFileName),
-    captureDirectory: asCaptureDirectory(raw.captureDirectory, DEFAULT_SETTINGS.captureDirectory)
+    captureDirectory: asCaptureDirectory(raw.captureDirectory, DEFAULT_SETTINGS.captureDirectory),
+    wideModeWidth: displayModeWidths.wideModeWidth,
+    narrowModeWidth: displayModeWidths.narrowModeWidth
   };
 }
 

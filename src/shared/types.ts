@@ -25,6 +25,8 @@ export interface AppSettings {
   captureIntervalMin: CaptureIntervalMin;
   captureFileName: string;
   captureDirectory: string;
+  wideModeWidth: number;
+  narrowModeWidth: number;
 }
 
 export interface LayoutMetrics {

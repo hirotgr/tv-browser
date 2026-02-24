@@ -33,6 +33,7 @@ var import_node_os = __toESM(require("os"));
 var import_node_path = __toESM(require("path"));
 var SETTINGS_FILE_NAME = "settings.json";
 var MAX_SITE_URL_LENGTH = 64;
+var MIN_DISPLAY_MODE_WIDTH = 320;
 var CAPTURE_INTERVAL_VALUES = [1, 5, 15, 30, 60, 240];
 var INVALID_CAPTURE_FILE_NAME_PATTERN = /[<>:"/\\|?*\u0000-\u001f]/;
 var DEFAULT_CAPTURE_DIRECTORY = import_node_path.default.join(import_node_os.default.homedir(), "Downloads");
@@ -49,10 +50,47 @@ var DEFAULT_SETTINGS = {
   widthResizeOrigin: "right",
   captureIntervalMin: 5,
   captureFileName: "capture",
-  captureDirectory: DEFAULT_CAPTURE_DIRECTORY
+  captureDirectory: DEFAULT_CAPTURE_DIRECTORY,
+  wideModeWidth: 1920,
+  narrowModeWidth: 425
 };
 function asFiniteNumber(value, fallback) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+function asPositiveInteger(value, fallback, minimum = 1) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+  const rounded = Math.round(value);
+  return rounded >= minimum ? rounded : fallback;
+}
+function asDisplayModeWidths(wideValue, narrowValue, fallbackWide, fallbackNarrow) {
+  let safeFallbackWide = asPositiveInteger(
+    fallbackWide,
+    DEFAULT_SETTINGS.wideModeWidth,
+    MIN_DISPLAY_MODE_WIDTH
+  );
+  let safeFallbackNarrow = asPositiveInteger(
+    fallbackNarrow,
+    DEFAULT_SETTINGS.narrowModeWidth,
+    MIN_DISPLAY_MODE_WIDTH
+  );
+  if (safeFallbackWide <= safeFallbackNarrow) {
+    safeFallbackWide = DEFAULT_SETTINGS.wideModeWidth;
+    safeFallbackNarrow = DEFAULT_SETTINGS.narrowModeWidth;
+  }
+  const wideModeWidth = asPositiveInteger(wideValue, safeFallbackWide, MIN_DISPLAY_MODE_WIDTH);
+  const narrowModeWidth = asPositiveInteger(narrowValue, safeFallbackNarrow, MIN_DISPLAY_MODE_WIDTH);
+  if (wideModeWidth <= narrowModeWidth) {
+    return {
+      wideModeWidth: safeFallbackWide,
+      narrowModeWidth: safeFallbackNarrow
+    };
+  }
+  return {
+    wideModeWidth,
+    narrowModeWidth
+  };
 }
 function asNullableCoordinate(value, fallback) {
   if (value === null || value === void 0) {
@@ -118,6 +156,12 @@ function asSiteUrl(value, fallback) {
   }
 }
 function sanitize(raw) {
+  const displayModeWidths = asDisplayModeWidths(
+    raw.wideModeWidth,
+    raw.narrowModeWidth,
+    DEFAULT_SETTINGS.wideModeWidth,
+    DEFAULT_SETTINGS.narrowModeWidth
+  );
   return {
     theme: asTheme(raw.theme, DEFAULT_SETTINGS.theme),
     alwaysOnTop: asBoolean(raw.alwaysOnTop, DEFAULT_SETTINGS.alwaysOnTop),
@@ -131,7 +175,9 @@ function sanitize(raw) {
     widthResizeOrigin: asWidthResizeOrigin(raw.widthResizeOrigin, DEFAULT_SETTINGS.widthResizeOrigin),
     captureIntervalMin: asCaptureIntervalMin(raw.captureIntervalMin, DEFAULT_SETTINGS.captureIntervalMin),
     captureFileName: asCaptureFileName(raw.captureFileName, DEFAULT_SETTINGS.captureFileName),
-    captureDirectory: asCaptureDirectory(raw.captureDirectory, DEFAULT_SETTINGS.captureDirectory)
+    captureDirectory: asCaptureDirectory(raw.captureDirectory, DEFAULT_SETTINGS.captureDirectory),
+    wideModeWidth: displayModeWidths.wideModeWidth,
+    narrowModeWidth: displayModeWidths.narrowModeWidth
   };
 }
 function resolveSettingsPath(userDataPath) {
@@ -222,6 +268,31 @@ function sanitizeWidthResizeOrigin(value, fallback) {
 function sanitizeCaptureIntervalMin(value, fallback) {
   return CAPTURE_INTERVAL_VALUES2.includes(value) ? value : fallback;
 }
+function sanitizeDisplayModeWidths(wideValue, narrowValue, fallbackWide, fallbackNarrow) {
+  const defaultWideModeWidth = Math.max(MIN_WINDOW_WIDTH, DEFAULT_SETTINGS.wideModeWidth);
+  const defaultNarrowModeWidth = Math.max(MIN_WINDOW_WIDTH, DEFAULT_SETTINGS.narrowModeWidth);
+  let safeFallbackWide = Math.max(MIN_WINDOW_WIDTH, sanitizeCoordinate(fallbackWide) || defaultWideModeWidth);
+  let safeFallbackNarrow = Math.max(
+    MIN_WINDOW_WIDTH,
+    sanitizeCoordinate(fallbackNarrow) || defaultNarrowModeWidth
+  );
+  if (safeFallbackWide <= safeFallbackNarrow) {
+    safeFallbackWide = defaultWideModeWidth;
+    safeFallbackNarrow = defaultNarrowModeWidth;
+  }
+  const wideModeWidth = Math.max(MIN_WINDOW_WIDTH, sanitizeCoordinate(wideValue) || safeFallbackWide);
+  const narrowModeWidth = Math.max(MIN_WINDOW_WIDTH, sanitizeCoordinate(narrowValue) || safeFallbackNarrow);
+  if (wideModeWidth <= narrowModeWidth) {
+    return {
+      wideModeWidth: safeFallbackWide,
+      narrowModeWidth: safeFallbackNarrow
+    };
+  }
+  return {
+    wideModeWidth,
+    narrowModeWidth
+  };
+}
 function normalizeCaptureFileName2(rawValue) {
   return rawValue.trim().replace(/(?:\.png)+$/i, "").trim();
 }
@@ -273,6 +344,12 @@ function migrateLegacySettingsIfNeeded() {
 }
 function sanitizeSettings(next) {
   const defaultCaptureDirectory = import_node_path2.default.resolve(import_electron.app.getPath("downloads"));
+  const displayModeWidths = sanitizeDisplayModeWidths(
+    next.wideModeWidth,
+    next.narrowModeWidth,
+    DEFAULT_SETTINGS.wideModeWidth,
+    DEFAULT_SETTINGS.narrowModeWidth
+  );
   const base = {
     theme: sanitizeTheme(next.theme, DEFAULT_SETTINGS.theme),
     alwaysOnTop: Boolean(next.alwaysOnTop),
@@ -292,7 +369,9 @@ function sanitizeSettings(next) {
       DEFAULT_SETTINGS.captureIntervalMin
     ),
     captureFileName: sanitizeCaptureFileName(next.captureFileName, DEFAULT_SETTINGS.captureFileName),
-    captureDirectory: sanitizeCaptureDirectory(next.captureDirectory, defaultCaptureDirectory)
+    captureDirectory: sanitizeCaptureDirectory(next.captureDirectory, defaultCaptureDirectory),
+    wideModeWidth: displayModeWidths.wideModeWidth,
+    narrowModeWidth: displayModeWidths.narrowModeWidth
   };
   return {
     ...base,
@@ -380,23 +459,33 @@ function composeSettings(context) {
     widthResizeOrigin: context.local.widthResizeOrigin,
     captureIntervalMin: settings.captureIntervalMin,
     captureFileName: settings.captureFileName,
-    captureDirectory: settings.captureDirectory
+    captureDirectory: settings.captureDirectory,
+    wideModeWidth: settings.wideModeWidth,
+    narrowModeWidth: settings.narrowModeWidth
   };
 }
-function computeLayout(windowWidth, local) {
+function computeLayout(windowWidth, windowHeight) {
   const safeWindowWidth = Math.max(1, Math.round(windowWidth));
-  const cardX = safeWindowWidth - WINDOW_PADDING - local.cardWidth;
+  const safeWindowHeight = Math.max(1, Math.round(windowHeight));
+  const availableCardWidth = Math.max(1, safeWindowWidth - WINDOW_PADDING * 2);
+  const minimumCardWidthFromWideMode = Math.max(
+    MIN_CARD_WIDTH,
+    Math.max(1, settings.wideModeWidth - WINDOW_PADDING * 2)
+  );
+  const cardWidth = Math.max(availableCardWidth, minimumCardWidthFromWideMode);
+  const cardHeight = Math.max(1, safeWindowHeight - HEADER_HEIGHT - WINDOW_PADDING * 2);
+  const cardX = safeWindowWidth - WINDOW_PADDING - cardWidth;
   const cardY = HEADER_HEIGHT + WINDOW_PADDING;
   const contentX = cardX + CARD_PADDING;
   const contentY = cardY + CARD_PADDING;
-  const contentWidth = Math.max(1, local.cardWidth - CARD_PADDING * 2);
-  const contentHeight = Math.max(1, local.cardHeight - CARD_PADDING * 2);
+  const contentWidth = Math.max(1, cardWidth - CARD_PADDING * 2);
+  const contentHeight = Math.max(1, cardHeight - CARD_PADDING * 2);
   return {
     headerHeight: HEADER_HEIGHT,
     cardX,
     cardY,
-    cardWidth: local.cardWidth,
-    cardHeight: local.cardHeight,
+    cardWidth,
+    cardHeight,
     contentX,
     contentY,
     contentWidth,
@@ -414,8 +503,8 @@ function broadcastLayout(context) {
   if (context.window.isDestroyed() || context.tradingView.webContents.isDestroyed()) {
     return;
   }
-  const [windowWidth] = context.window.getContentSize();
-  context.latestLayout = computeLayout(windowWidth, context.local);
+  const [windowWidth, windowHeight] = context.window.getContentSize();
+  context.latestLayout = computeLayout(windowWidth, windowHeight);
   if (context.tradingViewSuspended) {
     context.tradingView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
   } else {
@@ -579,6 +668,9 @@ function isAllowedExternalUrl(rawUrl) {
     return false;
   }
 }
+function resolveInitialTradingViewUrl(initialUrl) {
+  return initialUrl && isAllowedExternalUrl(initialUrl) ? initialUrl : settings.siteUrl;
+}
 function loadTradingViewTarget(context, url) {
   if (context.tradingView.webContents.isDestroyed()) {
     return;
@@ -659,7 +751,7 @@ function clampBoundsToDisplayWorkArea(bounds) {
     height: bounds.height
   };
 }
-function createAppWindow(sourceWindowId) {
+function createAppWindow(sourceWindowId, initialUrl) {
   const sourceContext = resolveSourceContext(sourceWindowId);
   let local = sanitizeLocalSettings(sourceContext ? sourceContext.local : extractLocalSettings(settings));
   if (sourceContext && !sourceContext.window.isDestroyed()) {
@@ -721,11 +813,11 @@ function createAppWindow(sourceWindowId) {
   windowRef.contentView.addChildView(tradingView);
   tradingView.webContents.setWindowOpenHandler(({ url }) => {
     if (isAllowedExternalUrl(url)) {
-      void import_electron.shell.openExternal(url);
+      loadTradingViewTarget(context, url);
     }
     return { action: "deny" };
   });
-  loadTradingViewTarget(context, settings.siteUrl);
+  loadTradingViewTarget(context, resolveInitialTradingViewUrl(initialUrl));
   void windowRef.loadFile(import_node_path2.default.join(__dirname, "../renderer/index.html"));
   windowRef.on("resize", () => {
     updateWindowSizeInLocalSettings(context);
@@ -836,7 +928,14 @@ function registerIpc() {
       patch.captureDirectory,
       settings.captureDirectory
     );
+    const nextDisplayModeWidths = sanitizeDisplayModeWidths(
+      patch.wideModeWidth,
+      patch.narrowModeWidth,
+      settings.wideModeWidth,
+      settings.narrowModeWidth
+    );
     let globalChanged = false;
+    let wideModeWidthChanged = false;
     let captureSettingsChanged = false;
     if (nextTheme !== settings.theme) {
       settings = { ...settings, theme: nextTheme };
@@ -862,6 +961,15 @@ function registerIpc() {
       globalChanged = true;
       captureSettingsChanged = true;
     }
+    if (nextDisplayModeWidths.wideModeWidth !== settings.wideModeWidth || nextDisplayModeWidths.narrowModeWidth !== settings.narrowModeWidth) {
+      wideModeWidthChanged = nextDisplayModeWidths.wideModeWidth !== settings.wideModeWidth;
+      settings = {
+        ...settings,
+        wideModeWidth: nextDisplayModeWidths.wideModeWidth,
+        narrowModeWidth: nextDisplayModeWidths.narrowModeWidth
+      };
+      globalChanged = true;
+    }
     const localPatchProvided = typeof patch.alwaysOnTop === "boolean" || patch.cardWidth !== void 0 || patch.cardHeight !== void 0 || patch.windowWidth !== void 0 || patch.windowHeight !== void 0 || patch.windowX !== void 0 || patch.windowY !== void 0 || patch.widthResizeOrigin !== void 0;
     let localChanged = false;
     if (localPatchProvided) {
@@ -885,13 +993,20 @@ function registerIpc() {
     }
     if (localChanged) {
       mergeLocalSettingsIntoDefaults(context.local, { includePosition: false });
-      broadcastLayout(context);
+      if (!wideModeWidthChanged) {
+        broadcastLayout(context);
+      }
     }
     if (settings.siteUrl !== previousSiteUrl) {
       loadTradingViewTargets(settings.siteUrl);
     }
     if (captureSettingsChanged && activeCaptureWindowId !== null && !capturePaused) {
       scheduleNextCapture();
+    }
+    if (wideModeWidthChanged) {
+      for (const windowContext of windowContexts.values()) {
+        broadcastLayout(windowContext);
+      }
     }
     if (globalChanged) {
       applyThemeAndWindowFlags();
@@ -921,8 +1036,8 @@ function registerIpc() {
   import_electron.ipcMain.handle("layout:get", (event) => {
     const context = requireWindowContext(event);
     if (!context.latestLayout) {
-      const [windowWidth] = context.window.getContentSize();
-      context.latestLayout = computeLayout(windowWidth, context.local);
+      const [windowWidth, windowHeight] = context.window.getContentSize();
+      context.latestLayout = computeLayout(windowWidth, windowHeight);
     }
     return context.latestLayout;
   });

@@ -9,7 +9,6 @@ import {
   ipcMain,
   nativeTheme,
   screen,
-  shell,
   WebContentsView
 } from "electron";
 import type { IpcMainInvokeEvent, MenuItemConstructorOptions } from "electron";
@@ -129,6 +128,42 @@ function sanitizeCaptureIntervalMin(
     : fallback;
 }
 
+function sanitizeDisplayModeWidths(
+  wideValue: unknown,
+  narrowValue: unknown,
+  fallbackWide: number,
+  fallbackNarrow: number
+): Pick<AppSettings, "wideModeWidth" | "narrowModeWidth"> {
+  const defaultWideModeWidth = Math.max(MIN_WINDOW_WIDTH, DEFAULT_SETTINGS.wideModeWidth);
+  const defaultNarrowModeWidth = Math.max(MIN_WINDOW_WIDTH, DEFAULT_SETTINGS.narrowModeWidth);
+
+  let safeFallbackWide = Math.max(MIN_WINDOW_WIDTH, sanitizeCoordinate(fallbackWide) || defaultWideModeWidth);
+  let safeFallbackNarrow = Math.max(
+    MIN_WINDOW_WIDTH,
+    sanitizeCoordinate(fallbackNarrow) || defaultNarrowModeWidth
+  );
+
+  if (safeFallbackWide <= safeFallbackNarrow) {
+    safeFallbackWide = defaultWideModeWidth;
+    safeFallbackNarrow = defaultNarrowModeWidth;
+  }
+
+  const wideModeWidth = Math.max(MIN_WINDOW_WIDTH, sanitizeCoordinate(wideValue) || safeFallbackWide);
+  const narrowModeWidth = Math.max(MIN_WINDOW_WIDTH, sanitizeCoordinate(narrowValue) || safeFallbackNarrow);
+
+  if (wideModeWidth <= narrowModeWidth) {
+    return {
+      wideModeWidth: safeFallbackWide,
+      narrowModeWidth: safeFallbackNarrow
+    };
+  }
+
+  return {
+    wideModeWidth,
+    narrowModeWidth
+  };
+}
+
 function normalizeCaptureFileName(rawValue: string): string {
   return rawValue.trim().replace(/(?:\.png)+$/i, "").trim();
 }
@@ -191,6 +226,12 @@ function migrateLegacySettingsIfNeeded(): void {
 
 function sanitizeSettings(next: AppSettings): AppSettings {
   const defaultCaptureDirectory = path.resolve(app.getPath("downloads"));
+  const displayModeWidths = sanitizeDisplayModeWidths(
+    next.wideModeWidth,
+    next.narrowModeWidth,
+    DEFAULT_SETTINGS.wideModeWidth,
+    DEFAULT_SETTINGS.narrowModeWidth
+  );
   const base = {
     theme: sanitizeTheme(next.theme, DEFAULT_SETTINGS.theme),
     alwaysOnTop: Boolean(next.alwaysOnTop),
@@ -210,7 +251,9 @@ function sanitizeSettings(next: AppSettings): AppSettings {
       DEFAULT_SETTINGS.captureIntervalMin
     ),
     captureFileName: sanitizeCaptureFileName(next.captureFileName, DEFAULT_SETTINGS.captureFileName),
-    captureDirectory: sanitizeCaptureDirectory(next.captureDirectory, defaultCaptureDirectory)
+    captureDirectory: sanitizeCaptureDirectory(next.captureDirectory, defaultCaptureDirectory),
+    wideModeWidth: displayModeWidths.wideModeWidth,
+    narrowModeWidth: displayModeWidths.narrowModeWidth
   };
 
   return {
@@ -321,25 +364,35 @@ function composeSettings(context: WindowContext): AppSettings {
     widthResizeOrigin: context.local.widthResizeOrigin,
     captureIntervalMin: settings.captureIntervalMin,
     captureFileName: settings.captureFileName,
-    captureDirectory: settings.captureDirectory
+    captureDirectory: settings.captureDirectory,
+    wideModeWidth: settings.wideModeWidth,
+    narrowModeWidth: settings.narrowModeWidth
   };
 }
 
-function computeLayout(windowWidth: number, local: WindowLocalSettings): LayoutMetrics {
+function computeLayout(windowWidth: number, windowHeight: number): LayoutMetrics {
   const safeWindowWidth = Math.max(1, Math.round(windowWidth));
-  const cardX = safeWindowWidth - WINDOW_PADDING - local.cardWidth;
+  const safeWindowHeight = Math.max(1, Math.round(windowHeight));
+  const availableCardWidth = Math.max(1, safeWindowWidth - WINDOW_PADDING * 2);
+  const minimumCardWidthFromWideMode = Math.max(
+    MIN_CARD_WIDTH,
+    Math.max(1, settings.wideModeWidth - WINDOW_PADDING * 2)
+  );
+  const cardWidth = Math.max(availableCardWidth, minimumCardWidthFromWideMode);
+  const cardHeight = Math.max(1, safeWindowHeight - HEADER_HEIGHT - WINDOW_PADDING * 2);
+  const cardX = safeWindowWidth - WINDOW_PADDING - cardWidth;
   const cardY = HEADER_HEIGHT + WINDOW_PADDING;
   const contentX = cardX + CARD_PADDING;
   const contentY = cardY + CARD_PADDING;
-  const contentWidth = Math.max(1, local.cardWidth - CARD_PADDING * 2);
-  const contentHeight = Math.max(1, local.cardHeight - CARD_PADDING * 2);
+  const contentWidth = Math.max(1, cardWidth - CARD_PADDING * 2);
+  const contentHeight = Math.max(1, cardHeight - CARD_PADDING * 2);
 
   return {
     headerHeight: HEADER_HEIGHT,
     cardX,
     cardY,
-    cardWidth: local.cardWidth,
-    cardHeight: local.cardHeight,
+    cardWidth,
+    cardHeight,
     contentX,
     contentY,
     contentWidth,
@@ -360,8 +413,8 @@ function broadcastLayout(context: WindowContext): void {
     return;
   }
 
-  const [windowWidth] = context.window.getContentSize();
-  context.latestLayout = computeLayout(windowWidth, context.local);
+  const [windowWidth, windowHeight] = context.window.getContentSize();
+  context.latestLayout = computeLayout(windowWidth, windowHeight);
 
   if (context.tradingViewSuspended) {
     context.tradingView.setBounds({ x: 0, y: 0, width: 0, height: 0 });
@@ -558,6 +611,10 @@ function isAllowedExternalUrl(rawUrl: string): boolean {
   }
 }
 
+function resolveInitialTradingViewUrl(initialUrl?: string): string {
+  return initialUrl && isAllowedExternalUrl(initialUrl) ? initialUrl : settings.siteUrl;
+}
+
 function loadTradingViewTarget(context: WindowContext, url: string): void {
   if (context.tradingView.webContents.isDestroyed()) {
     return;
@@ -653,7 +710,7 @@ function clampBoundsToDisplayWorkArea(bounds: Rectangle): Rectangle {
   };
 }
 
-function createAppWindow(sourceWindowId?: number): BrowserWindow {
+function createAppWindow(sourceWindowId?: number, initialUrl?: string): BrowserWindow {
   const sourceContext = resolveSourceContext(sourceWindowId);
 
   let local = sanitizeLocalSettings(sourceContext ? sourceContext.local : extractLocalSettings(settings));
@@ -724,12 +781,12 @@ function createAppWindow(sourceWindowId?: number): BrowserWindow {
 
   tradingView.webContents.setWindowOpenHandler(({ url }) => {
     if (isAllowedExternalUrl(url)) {
-      void shell.openExternal(url);
+      loadTradingViewTarget(context, url);
     }
     return { action: "deny" };
   });
 
-  loadTradingViewTarget(context, settings.siteUrl);
+  loadTradingViewTarget(context, resolveInitialTradingViewUrl(initialUrl));
   void windowRef.loadFile(path.join(__dirname, "../renderer/index.html"));
 
   windowRef.on("resize", () => {
@@ -865,8 +922,15 @@ function registerIpc(): void {
       patch.captureDirectory,
       settings.captureDirectory
     );
+    const nextDisplayModeWidths = sanitizeDisplayModeWidths(
+      patch.wideModeWidth,
+      patch.narrowModeWidth,
+      settings.wideModeWidth,
+      settings.narrowModeWidth
+    );
 
     let globalChanged = false;
+    let wideModeWidthChanged = false;
     let captureSettingsChanged = false;
     if (nextTheme !== settings.theme) {
       settings = { ...settings, theme: nextTheme };
@@ -895,6 +959,19 @@ function registerIpc(): void {
       settings = { ...settings, captureDirectory: nextCaptureDirectory };
       globalChanged = true;
       captureSettingsChanged = true;
+    }
+
+    if (
+      nextDisplayModeWidths.wideModeWidth !== settings.wideModeWidth ||
+      nextDisplayModeWidths.narrowModeWidth !== settings.narrowModeWidth
+    ) {
+      wideModeWidthChanged = nextDisplayModeWidths.wideModeWidth !== settings.wideModeWidth;
+      settings = {
+        ...settings,
+        wideModeWidth: nextDisplayModeWidths.wideModeWidth,
+        narrowModeWidth: nextDisplayModeWidths.narrowModeWidth
+      };
+      globalChanged = true;
     }
 
     const localPatchProvided =
@@ -932,7 +1009,9 @@ function registerIpc(): void {
 
     if (localChanged) {
       mergeLocalSettingsIntoDefaults(context.local, { includePosition: false });
-      broadcastLayout(context);
+      if (!wideModeWidthChanged) {
+        broadcastLayout(context);
+      }
     }
 
     if (settings.siteUrl !== previousSiteUrl) {
@@ -941,6 +1020,12 @@ function registerIpc(): void {
 
     if (captureSettingsChanged && activeCaptureWindowId !== null && !capturePaused) {
       scheduleNextCapture();
+    }
+
+    if (wideModeWidthChanged) {
+      for (const windowContext of windowContexts.values()) {
+        broadcastLayout(windowContext);
+      }
     }
 
     if (globalChanged) {
@@ -978,8 +1063,8 @@ function registerIpc(): void {
   ipcMain.handle("layout:get", (event) => {
     const context = requireWindowContext(event);
     if (!context.latestLayout) {
-      const [windowWidth] = context.window.getContentSize();
-      context.latestLayout = computeLayout(windowWidth, context.local);
+      const [windowWidth, windowHeight] = context.window.getContentSize();
+      context.latestLayout = computeLayout(windowWidth, windowHeight);
     }
     return context.latestLayout;
   });

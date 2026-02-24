@@ -1,6 +1,6 @@
 {
   "name": "tv-browser",
-  "version": "0.1.3",
+  "version": "0.2.1",
   "private": true,
   "description": "Single-card TradingView Electron app",
   "main": "dist/main/main.js",

@@ -9,12 +9,12 @@
 
 - TradingView を各ウィンドウ 1 カードで表示
 - `N` ボタン / `Cmd+N` で新規ウィンドウを追加
-- カード右下ハンドルでリサイズ
-- カードはウィンドウ右上基準で配置（ウィンドウが狭い場合は左にはみ出し許容）
-- ヘッダー右側に `HH:MM JST` 時計と操作 UI（`C` / `N` / `X+` / `X-` / `Right|Left` / `AoT` / `gear`）
-- `Settings` モーダルで `Theme` / `Site URL` / 定期スクリーンショット設定を管理
+- カードはウィンドウ右上基準で配置し、高さは常にウィンドウにフィット（ウィンドウが狭い場合は左にはみ出し許容）
+- カード幅はウィンドウにフィットするが、最小幅は `wide mode` 設定値に制限
+- ヘッダー右側に `HH:MM JST` 時計と操作 UI（`C` / `N` / `W` / `Right|Left` / `AoT` / `gear`）
+- `Settings` モーダルで `Theme` / `Site URL` / `Display Width (pixel)` / 定期スクリーンショット設定を管理
 - 全ウィンドウで `persist:tradingview` を共有し Cookie / ストレージ / ログイン状態を共有
-- `Theme` / `Site URL` / キャプチャ設定は全ウィンドウ共通、`AoT` / `Display Mode` / 幅サイズ操作はウィンドウローカル
+- `Theme` / `Site URL` / `Display Width` / キャプチャ設定は全ウィンドウ共通、`AoT` / 幅変更起点 / ウィンドウ幅操作はウィンドウローカル
 - 設定値は永続化され、次回起動時の初期値として復元
 - 終了時の最後に閉じたウィンドウの `x/y` 座標を保存し、起動時は画面外をクランプして復元
 - 外部リンクは `https:` のみ外部ブラウザで許可
@@ -46,7 +46,7 @@ src/
     settings-store.ts      # settings.json の読み書き
   renderer/
     index.html             # UI 構造
-    app.ts                 # UI ロジック（時計、設定操作、キャプチャ操作、カードリサイズ）
+    app.ts                 # UI ロジック（時計、設定操作、キャプチャ操作、幅トグル、レイアウト反映）
     styles.css             # 見た目
     global.d.ts            # window.desktopApi 型
   shared/
@@ -72,7 +72,7 @@ release/
 
 - 複数 `BrowserWindow` の作成と管理
 - 各ウィンドウの `WebContentsView`（TradingView表示）の管理
-- レイアウト計算と反映
+- レイアウト計算と反映（ウィンドウサイズ + `wideModeWidth` ベースのカード自動フィット）
 - IPC ハンドラ提供
 - 設定永続化（デバウンス + flush）
 - 定期スクリーンショットの単一ウィンドウ実行制御
@@ -90,6 +90,7 @@ TradingView View の要点:
 - すべてのウィンドウで `partition: "persist:tradingview"` を共有（ログイン状態維持）
 - `sandbox: true`
 - `setWindowOpenHandler` で `https:` のみ `shell.openExternal` 許可
+- `wideModeWidth` 変更時は全ウィンドウのカードレイアウトを即時再計算
 
 ### 4.2 Renderer
 
@@ -98,8 +99,8 @@ TradingView View の要点:
 責務:
 
 - 時計表示（`HH:MM JST`）
-- UI操作（キャプチャ制御、幅変更、起点切替、Settings モーダル）
-- カードリサイズ操作
+- UI操作（キャプチャ制御、`W` ボタン幅トグル、起点切替、Settings モーダル）
+- `Display Width (pixel)` 入力バリデーション
 - メインから通知された `LayoutMetrics` の反映
 
 ### 4.3 Preload
@@ -119,7 +120,7 @@ TradingView View の要点:
 - `HEADER_HEIGHT = 38`
 - `WINDOW_PADDING = 2`
 - `CARD_PADDING = 8`
-- `HANDLE_SIZE = 18`
+- `HANDLE_SIZE = 18`（legacy / UIでは未使用）
 - `MIN_CONTENT_WIDTH = 320`
 - `MIN_CONTENT_HEIGHT = 220`
 - `MIN_CARD_WIDTH = 336`
@@ -127,12 +128,24 @@ TradingView View の要点:
 
 ### 5.2 カード配置ロジック
 
-`computeLayout(windowWidth)` で以下を計算:
+`computeLayout(windowWidth, windowHeight)` で以下を計算:
 
-- `cardX = windowWidth - WINDOW_PADDING - cardWidth`
-- `cardY = HEADER_HEIGHT + WINDOW_PADDING`
+- Y方向（常時フィット）
+  - `cardY = HEADER_HEIGHT + WINDOW_PADDING`
+  - `cardHeight = max(1, windowHeight - HEADER_HEIGHT - WINDOW_PADDING * 2)`
+  - カード上端はヘッダー直下、下端はウィンドウ下端にフィット
+- X方向（右寄せ + `wide mode` 最小幅制限）
+  - `availableCardWidth = max(1, windowWidth - WINDOW_PADDING * 2)`
+  - `minimumCardWidthFromWideMode = max(MIN_CARD_WIDTH, settings.wideModeWidth - WINDOW_PADDING * 2)`
+  - `cardWidth = max(availableCardWidth, minimumCardWidthFromWideMode)`
+  - `cardX = windowWidth - WINDOW_PADDING - cardWidth`
+- `WebContentsView` 表示領域（カード内パディング）
+  - `contentX = cardX + CARD_PADDING`
+  - `contentY = cardY + CARD_PADDING`
+  - `contentWidth = max(1, cardWidth - CARD_PADDING * 2)`
+  - `contentHeight = max(1, cardHeight - CARD_PADDING * 2)`
 
-このためカードは「右上固定」で配置され、ウィンドウ幅がカード幅より小さい場合は左側にはみ出します（仕様どおり）。
+このためカードは「右上固定」で配置され、`windowWidth >= wideModeWidth` のときは全体表示、`windowWidth < wideModeWidth` のときは左側にはみ出して一部のみ表示されます。
 
 ---
 
@@ -157,8 +170,12 @@ interface AppSettings {
   captureIntervalMin: 1 | 5 | 15 | 30 | 60 | 240;
   captureFileName: string;
   captureDirectory: string;
+  wideModeWidth: number;
+  narrowModeWidth: number;
 }
 ```
+
+`cardWidth` / `cardHeight` は互換のため設定型に残っているが、現行のカードレイアウト計算（自動フィット）では使用しない（legacy / 互換残置）。
 
 ### 6.2 保存先
 
@@ -180,18 +197,21 @@ interface AppSettings {
   - `captureIntervalMin: 5`
   - `captureFileName: "capture"`
   - `captureDirectory: ~/Downloads` 相当の絶対パス
+  - `wideModeWidth: 1920`
+  - `narrowModeWidth: 425`
 
 ### 6.3 保存タイミング
 
 - 通常更新: `250ms` デバウンス (`scheduleSettingsSave`)
-- 通常更新で即時保存されるローカル値: `alwaysOnTop`, `widthResizeOrigin`, `windowWidth/windowHeight`, `cardWidth/cardHeight`（`windowX/windowY` は除外）
+- 通常更新で即時保存されるローカル値: `alwaysOnTop`, `widthResizeOrigin`, `windowWidth/windowHeight`, `cardWidth/cardHeight`（`windowX/windowY` は除外、`cardWidth/cardHeight` は legacy / 互換残置）
 - `windowX/windowY` は最後のウィンドウ `close` / `Cmd+Q` 到達後の `window-all-closed` でのみ保存
 - 終了系の最終スナップショット: 各ウィンドウ `move/moved` で座標をメモリ追従し、`close`（必要時 `closed`）で `windowWidth/windowHeight/windowX/windowY` を確定して `flushSettings()`
+- `settings:update` で `wideModeWidth` が変更された場合は、全ウィンドウのカードレイアウトを即時再計算して反映
 
 ### 6.4 マルチウィンドウ時の適用範囲
 
-- 全ウィンドウ共通: `theme`, `siteUrl`, `captureIntervalMin`, `captureFileName`, `captureDirectory`
-- ウィンドウローカル（実行中）: `alwaysOnTop`, `widthResizeOrigin`, `windowWidth/windowHeight`, `windowX/windowY`, `cardWidth/cardHeight`
+- 全ウィンドウ共通: `theme`, `siteUrl`, `wideModeWidth`, `narrowModeWidth`, `captureIntervalMin`, `captureFileName`, `captureDirectory`
+- ウィンドウローカル（実行中）: `alwaysOnTop`, `widthResizeOrigin`, `windowWidth/windowHeight`, `windowX/windowY`, `cardWidth/cardHeight`（`cardWidth/cardHeight` は legacy / 互換残置）
 - ローカル値も `settings.json` には 1 セット保存され、次回起動時の初期値として使われる
 - `windowX/windowY` が画面外でも、起動時に `screen.workArea` 内へクランプして表示する
 
@@ -210,7 +230,7 @@ interface AppSettings {
 - `getWindowId(): Promise<number>`
 - `getSettings(): Promise<AppSettings>`
 - `updateSettings(patch: Partial<AppSettings>): Promise<AppSettings>`
-- `resizeCard(size: { width: number; height: number }): Promise<AppSettings>`
+- `resizeCard(size: { width: number; height: number }): Promise<AppSettings>`（legacy / 互換残置。現行UIのリサイズハンドル廃止により未使用）
 - `getLayout(): Promise<LayoutMetrics | null>`
 - `setWindowWidth(payload: { width: number; origin: "right" | "left" }): Promise<{ width: number; height: number }>`
 - `pickCaptureDirectory(): Promise<string | null>`
@@ -227,8 +247,8 @@ interface AppSettings {
 
 - `origin = "right"`: 左端固定（右方向に伸縮）
 - `origin = "left"`: 右端固定（左方向に伸縮）
-
-`X+` は `1920`、`X-` は `425` を指定して呼び出します。
+- `W` ボタンは現在幅が `wideModeWidth` と一致するとき `narrowModeWidth`、それ以外では `wideModeWidth` を指定して呼び出す
+- `W` ボタンの tooltip / active 状態は `wideModeWidth` / `narrowModeWidth` を参照して更新される
 
 ### 7.3 定期キャプチャ IPC
 
@@ -249,35 +269,42 @@ interface AppSettings {
 - `HH:MM JST` 時計
 - `C` ボタン（Periodic Screen Capture）
 - `N` ボタン（新規ウィンドウ）
-- `X+` ボタン（幅 1920）
-- `X-` ボタン（幅 425）
+- `W` ボタン（ウィンドウ幅トグル。`wide mode` / `narrow mode` 設定値間を切替）
 - `Right/Left` セレクト（幅変更起点）
 - `AoT` チェックボックス（Always on Top）
 - `gear` ボタン（Settings モーダルを開く）
+
+`W` ボタンの表示:
+
+- 現在幅が `wide mode` 設定値のとき `aria-pressed="true"`（反転スタイル）
+- tooltip は次に切り替わる幅を `Set width to <value>` 形式で表示
 
 Settings モーダル:
 
 - `Theme` セレクト（Dark / Light）
 - `Site URL` テキスト入力（最大 64 文字）
+- `Display Width (pixel)`（`wide mode` / `narrow mode` の2テキストボックス、横並び）
 - `Capturing Interval (min)` ラジオ（`1` / `5` / `15` / `30` / `60` / `240`）
 - `File Name`（入力値の末尾 `.png` は除去して保存、UI右側に固定 `.png` 表示）
 - `Download to`（ディレクトリ入力 + `Browse...` で選択）
 - `Cancel` / `Save` ボタン
-- Save 時に `Theme` / `Site URL` / キャプチャ設定を一括反映
+- Save 時に `Theme` / `Site URL` / `Display Width` / キャプチャ設定を一括反映
 - `Site URL` は `https:` のみ許可（空文字、64文字超、非URL、`http:` はエラー）
+- `Display Width` は必須 / 整数 / `320px` 以上 / `wide mode > narrow mode` を満たす必要がある
 - `File Name` は空文字と禁止文字を拒否
 - `Download to` は存在するディレクトリのみ許可
 - モーダル表示中にウィンドウを閉じても、次回起動時はモーダル状態を持ち越さず通常表示で開始
+- `Display Width` の設定変更は `W` ボタンの tooltip / active 状態へ即時反映される
 
 時計:
 
 - `Intl.DateTimeFormat("ja-JP", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "Asia/Tokyo" })`
 - 表示形式: `HH:MM JST`
 
-カードリサイズ:
+カード表示挙動:
 
-- 右下ハンドルのポインタイベントでサイズ変更
-- リサイズ要求はキュー化し、過剰 IPC を抑制
+- カードは自動レイアウトで配置・サイズ決定され、UIから直接リサイズはできない
+- 高さは常にウィンドウにフィットし、幅は `wide mode` 設定値を最小値として右寄せ表示される
 
 定期キャプチャ:
 

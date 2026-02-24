@@ -25,8 +25,15 @@
             N
           </button>
           <div id="width-controls" role="group" aria-label="Window width controls">
-            <button id="expand-width-button" type="button" title="Set width to 1920">X+</button>
-            <button id="shrink-width-button" type="button" title="Set width to 425">X-</button>
+            <button
+              id="toggle-width-button"
+              type="button"
+              title="Set width to 1920"
+              aria-label="Toggle Window Width"
+              aria-pressed="false"
+            >
+              W
+            </button>
           </div>
           <label class="panel-item" for="width-origin-select">
             <select id="width-origin-select" aria-label="Display Mode">
@@ -65,6 +72,32 @@
               spellcheck="false"
             />
           </label>
+          <div class="settings-field" role="group" aria-labelledby="display-width-title">
+            <span id="display-width-title">Display Width (pixel)</span>
+            <div class="display-width-row">
+              <label class="display-width-item" for="wide-mode-width-input">
+                <span>wide mode</span>
+                <input
+                  id="wide-mode-width-input"
+                  type="text"
+                  inputmode="numeric"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
+              <label class="display-width-item" for="narrow-mode-width-input">
+                <span>narrow mode</span>
+                <input
+                  id="narrow-mode-width-input"
+                  type="text"
+                  inputmode="numeric"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </label>
+            </div>
+          </div>
+          <p id="display-width-error" role="alert" aria-live="polite"></p>
           <fieldset class="settings-field" id="capture-interval-fieldset">
             <legend>Capturing Interval (min)</legend>
             <div id="capture-interval-options" role="radiogroup" aria-label="Capturing Interval (min)">
@@ -111,9 +144,7 @@
         </form>
       </dialog>
 
-      <div id="card-frame" aria-hidden="true">
-        <button id="resize-handle" type="button" aria-label="Resize component" title="Resize"></button>
-      </div>
+      <div id="card-frame" aria-hidden="true"></div>
     </div>
     <script type="module" src="./app.mjs"></script>
   </body>
