@@ -21,17 +21,18 @@ TradingVewを見るためのブラウザアプリです。
 
 ---
 
-Watchlistだけを表示した状態 (`W` ボタンで narrow mode)
+Watchlistだけを表示した状態 (`W` トグルボタン(黒バック)でnarrow mode)
 
 ![](./doc/narrow-view.png)
 
 ---
 
-全体を表示した状態 (`W` トグルボタン(白バック)で wide mode) \
-(`C` ボタンをクリックし、ボタンが白バックになっている間は指定した分数で定期的にスクリーンショットを上書き保存)
+全体を表示した状態 (`W` トグルボタン(白バック)でwide mode) \
 
 ![](./doc/wide-view.png)
 
+
+`C` トグルボタンをクリックし、白バックになっている間は指定した分数で定期的にスクリーンショットを上書き保存 \
 この画像の場合、日足〜5分足のローソクチャートに GMMA (Guppy Multi Moving Average) を表示しており、短期EMAグループと長期EMAグループの傾きと拡散・縮小を評価してトレンド判断する、といったことが考えられます。([visual-trading-gmma](https://github.com/hirotgr/visual-trading-gmma)として作成中)
 
 ![](./doc/gmma.png)
