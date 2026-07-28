@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
@@ -312,6 +314,34 @@ fn capture_output_path(settings: &AppSettings) -> PathBuf {
     Path::new(&settings.capture_directory).join(format!("{}.png", settings.capture_file_name))
 }
 
+fn open_capture_output(path: &Path, create: bool) -> Result<fs::File, String> {
+    let mut options = OpenOptions::new();
+    options.write(true).create(create);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+
+    let file = options
+        .open(path)
+        .map_err(|error| format!("Capture output file could not be opened safely: {error}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("Capture output metadata could not be read: {error}"))?;
+    if !metadata.file_type().is_file() {
+        return Err(String::from(
+            "Capture output path must be a writable regular file",
+        ));
+    }
+    Ok(file)
+}
+
+fn write_capture_output(path: &Path, contents: &[u8]) -> Result<(), String> {
+    let mut file = open_capture_output(path, true)?;
+    file.set_len(0)
+        .map_err(|error| format!("Capture output file could not be truncated: {error}"))?;
+    file.write_all(contents)
+        .map_err(|error| format!("Capture output file could not be written: {error}"))
+}
+
 fn validate_capture_destination(settings: &AppSettings) -> Result<(), String> {
     let directory = Path::new(&settings.capture_directory);
     if !directory.is_dir() {
@@ -362,16 +392,22 @@ fn validate_capture_destination(settings: &AppSettings) -> Result<(), String> {
     }
 
     let output_path = capture_output_path(settings);
-    if output_path.exists() {
-        if !output_path.is_file() {
-            return Err(String::from(
-                "Capture output path must be a writable regular file",
+    match fs::symlink_metadata(&output_path) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_file() {
+                return Err(String::from(
+                    "Capture output path must be a writable regular file and cannot be a symbolic link",
+                ));
+            }
+            open_capture_output(&output_path, false)
+                .map_err(|error| format!("Capture output file is not writable: {error}"))?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Capture output path could not be inspected: {error}"
             ));
         }
-        OpenOptions::new()
-            .write(true)
-            .open(&output_path)
-            .map_err(|error| format!("Capture output file is not writable: {error}"))?;
     }
 
     Ok(())
@@ -704,6 +740,25 @@ fn compute_layout(window_width: f64, window_height: f64, wide_mode_width: f64) -
     }
 }
 
+fn child_webview_bounds(
+    layout: &LayoutMetrics,
+    scale: f64,
+    titlebar_height: f64,
+) -> (PhysicalPosition<i32>, PhysicalSize<u32>) {
+    (
+        PhysicalPosition::new(
+            (layout.content_x * scale).round() as i32,
+            ((layout.content_y + titlebar_height) * scale).round() as i32,
+        ),
+        PhysicalSize::new(
+            (layout.content_width * scale).round().max(1.0) as u32,
+            ((layout.content_height - titlebar_height).max(1.0) * scale)
+                .round()
+                .max(1.0) as u32,
+        ),
+    )
+}
+
 fn window_logical_size(window: &WebviewWindow) -> Result<(f64, f64), String> {
     let size = window.inner_size().map_err(|error| error.to_string())?;
     let scale = window.scale_factor().map_err(|error| error.to_string())?;
@@ -747,6 +802,7 @@ fn apply_layout(app: &tauri::AppHandle, label: &str) -> Result<LayoutMetrics, St
         .map_err(|error| error.to_string())?;
     let titlebar = titlebar_height(&context.window)?;
     let layout = compute_layout(width, height, wide);
+    let (content_position, content_size) = child_webview_bounds(&layout, scale, titlebar);
     context.latest_layout = layout.clone();
 
     if context.suspended {
@@ -761,17 +817,11 @@ fn apply_layout(app: &tauri::AppHandle, label: &str) -> Result<LayoutMetrics, St
             .map_err(|error| error.to_string())?;
         context
             .trading_view
-            .set_position(Position::Physical(PhysicalPosition::new(
-                (layout.content_x * scale).round() as i32,
-                ((layout.content_y + titlebar) * scale).round() as i32,
-            )))
+            .set_position(Position::Physical(content_position))
             .map_err(|error| error.to_string())?;
         context
             .trading_view
-            .set_size(Size::Physical(PhysicalSize::new(
-                (layout.content_width * scale).round().max(1.0) as u32,
-                (layout.content_height * scale).round().max(1.0) as u32,
-            )))
+            .set_size(Size::Physical(content_size))
             .map_err(|error| error.to_string())?;
     }
     drop(runtime);
@@ -1108,18 +1158,9 @@ fn create_app_window(
     });
     let scale = window.scale_factor().map_err(|error| error.to_string())?;
     let titlebar = titlebar_height(&window)?;
+    let (initial_position, initial_size) = child_webview_bounds(&initial_layout, scale, titlebar);
     let trading_view = parent
-        .add_child(
-            webview_builder,
-            PhysicalPosition::new(
-                (initial_layout.content_x * scale).round() as i32,
-                ((initial_layout.content_y + titlebar) * scale).round() as i32,
-            ),
-            PhysicalSize::new(
-                (initial_layout.content_width * scale).round().max(1.0) as u32,
-                (initial_layout.content_height * scale).round().max(1.0) as u32,
-            ),
-        )
+        .add_child(webview_builder, initial_position, initial_size)
         .map_err(|error| error.to_string())?;
     if let Ok(mut slot) = remote_slot.lock() {
         *slot = Some(trading_view.clone());
@@ -1649,7 +1690,7 @@ async fn capture_for_label(app: &tauri::AppHandle, label: &str) -> Result<String
         }
     }
 
-    fs::write(&path, png).map_err(|error| error.to_string())?;
+    write_capture_output(&path, &png)?;
     Ok(path.to_string_lossy().into_owned())
 }
 
@@ -1753,9 +1794,10 @@ pub fn run() {
 mod tests {
     use super::{
         AppSettings, ExitRequestAction, SettingsPatch, WindowSnapshot, WorkArea,
-        clamp_window_position, exit_request_action, load_settings_from_source, next_capture_delay,
-        prepare_settings_update, prepare_validated_settings_update, sanitize_window_coordinate,
-        save_then_commit_settings, validate_capture_destination, window_snapshot_candidate,
+        child_webview_bounds, clamp_window_position, compute_layout, exit_request_action,
+        load_settings_from_source, next_capture_delay, prepare_settings_update,
+        prepare_validated_settings_update, sanitize_window_coordinate, save_then_commit_settings,
+        validate_capture_destination, window_snapshot_candidate, write_capture_output,
     };
     use std::{
         fs,
@@ -1765,7 +1807,7 @@ mod tests {
     use tauri::{PhysicalPosition, PhysicalSize};
 
     #[cfg(unix)]
-    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::{PermissionsExt, symlink};
 
     fn test_settings() -> AppSettings {
         AppSettings {
@@ -1881,6 +1923,32 @@ mod tests {
     #[test]
     fn repeated_exit_request_does_not_open_another_confirmation() {
         assert_eq!(exit_request_action(true, true), ExitRequestAction::Prevent);
+    }
+
+    #[test]
+    fn child_webview_position_keeps_titlebar_clear() {
+        let layout = compute_layout(1320.0, 920.0, 1920.0);
+        let scale = 2.0;
+        let titlebar = 28.0;
+
+        let (position, _) = child_webview_bounds(&layout, scale, titlebar);
+
+        assert_eq!(
+            position.y,
+            ((layout.content_y + titlebar) * scale).round() as i32
+        );
+        assert_eq!(position.y, 152);
+    }
+
+    #[test]
+    fn child_webview_bottom_stays_inside_inner_content_area() {
+        let window_height = 920.0;
+        let layout = compute_layout(1320.0, window_height, 1920.0);
+        let (position, size) = child_webview_bounds(&layout, 1.0, 28.0);
+        let bottom = f64::from(position.y) + f64::from(size.height);
+
+        assert!(bottom <= window_height);
+        assert_eq!(bottom, 910.0);
     }
 
     #[test]
@@ -2135,6 +2203,77 @@ mod tests {
             0
         );
         fs::remove_dir(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn capture_output_writer_creates_and_overwrites_regular_files() {
+        let directory = create_test_directory("capture-output-writer");
+        let output = directory.join("capture.png");
+
+        write_capture_output(&output, b"first capture").expect("create capture output");
+        assert_eq!(
+            fs::read(&output).expect("read created capture"),
+            b"first capture"
+        );
+
+        write_capture_output(&output, b"updated").expect("overwrite capture output");
+        assert_eq!(fs::read(&output).expect("read updated capture"), b"updated");
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn non_regular_capture_output_is_rejected() {
+        let directory = create_test_directory("non-regular-capture-output");
+        let output = directory.join("capture.png");
+        fs::create_dir(&output).expect("create directory at capture output path");
+        let settings = AppSettings {
+            capture_directory: directory.to_string_lossy().into_owned(),
+            ..test_settings()
+        };
+
+        assert!(validate_capture_destination(&settings).is_err());
+        assert!(write_capture_output(&output, b"capture").is_err());
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capture_output_symlink_is_rejected_without_modifying_target() {
+        let directory = create_test_directory("capture-output-symlink");
+        let target = directory.join("target.txt");
+        let output = directory.join("capture.png");
+        fs::write(&target, b"protected contents").expect("create symlink target");
+        symlink(&target, &output).expect("create capture output symlink");
+        let settings = AppSettings {
+            capture_directory: directory.to_string_lossy().into_owned(),
+            ..test_settings()
+        };
+
+        assert!(validate_capture_destination(&settings).is_err());
+        assert!(write_capture_output(&output, b"capture").is_err());
+        assert_eq!(
+            fs::read(&target).expect("read protected target"),
+            b"protected contents"
+        );
+        fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dangling_capture_output_symlink_is_rejected_without_creating_target() {
+        let directory = create_test_directory("dangling-capture-output-symlink");
+        let target = directory.join("missing-target.txt");
+        let output = directory.join("capture.png");
+        symlink(&target, &output).expect("create dangling capture output symlink");
+        let settings = AppSettings {
+            capture_directory: directory.to_string_lossy().into_owned(),
+            ..test_settings()
+        };
+
+        assert!(validate_capture_destination(&settings).is_err());
+        assert!(write_capture_output(&output, b"capture").is_err());
+        assert!(!target.exists());
+        fs::remove_dir_all(directory).expect("remove test directory");
     }
 
     #[cfg(unix)]
