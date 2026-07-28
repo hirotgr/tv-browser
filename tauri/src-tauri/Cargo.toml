@@ -1,0 +1,33 @@
+[package]
+name = "tv-browser-tauri"
+version = "0.2.1"
+description = "Single-card TradingView desktop app powered by Tauri"
+authors = ["mnagao"]
+edition = "2024"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "tv_browser_tauri_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["unstable"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri-plugin-dialog = "2"
+tokio = { version = "1", features = ["time"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["NSBitmapImageRep", "NSImage", "NSImageRep"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["NSArray", "NSData", "NSDictionary", "NSError", "NSObject", "NSString", "NSValue", "block2", "std"] }
+objc2-web-kit = { version = "0.3", default-features = false, features = ["WKSnapshotConfiguration", "WKWebView", "block2", "std"] }

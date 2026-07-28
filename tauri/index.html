@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <title>TV Browser</title>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body data-theme="dark">
+    <header class="toolbar" aria-label="TV Browser controls">
+      <div class="toolbar-spacer"></div>
+      <time id="clock">--:-- JST</time>
+      <div class="capture-control">
+        <button id="capture-button" class="square-button" type="button" aria-pressed="false" title="Periodic Screen Capture">C</button>
+        <span id="capture-tooltip" class="tooltip" aria-hidden="true">Capturing on another window</span>
+      </div>
+      <button id="new-window-button" class="square-button" type="button" title="New Window (⌘N)">N</button>
+      <button id="width-button" class="square-button" type="button" aria-pressed="false">W</button>
+      <select id="width-origin" aria-label="Width resize origin" title="Width resize origin">
+        <option value="right">Right</option>
+        <option value="left">Left</option>
+      </select>
+      <label class="aot-control" title="Always on Top">
+        <input id="always-on-top" type="checkbox" />
+        <span>AoT</span>
+      </label>
+      <button id="settings-button" class="gear-button" type="button" aria-label="Open Settings" title="Settings">⚙</button>
+    </header>
+
+    <main id="card-frame" aria-hidden="true"></main>
+
+    <dialog id="settings-dialog">
+      <form id="settings-form" method="dialog" novalidate>
+        <header class="dialog-header">
+          <h1>Settings</h1>
+        </header>
+
+        <div class="form-grid">
+          <label for="theme">Theme</label>
+          <select id="theme">
+            <option value="dark">Dark</option>
+            <option value="light">Light</option>
+          </select>
+
+          <label for="site-url">Site URL</label>
+          <div class="field">
+            <input id="site-url" type="url" maxlength="64" autocomplete="off" />
+            <p id="site-url-error" class="error" role="alert"></p>
+          </div>
+
+          <span class="label">Display Width (pixel)</span>
+          <div class="field">
+            <div class="width-fields">
+              <label>wide mode <input id="wide-mode-width" inputmode="numeric" /></label>
+              <label>narrow mode <input id="narrow-mode-width" inputmode="numeric" /></label>
+            </div>
+            <p id="display-width-error" class="error" role="alert"></p>
+          </div>
+
+          <span class="label">Capturing Interval (min)</span>
+          <fieldset id="capture-interval">
+            <legend class="visually-hidden">Capturing Interval</legend>
+            <label><input type="radio" name="captureInterval" value="1" />1</label>
+            <label><input type="radio" name="captureInterval" value="5" />5</label>
+            <label><input type="radio" name="captureInterval" value="15" />15</label>
+            <label><input type="radio" name="captureInterval" value="30" />30</label>
+            <label><input type="radio" name="captureInterval" value="60" />60</label>
+            <label><input type="radio" name="captureInterval" value="240" />240</label>
+          </fieldset>
+
+          <label for="capture-file-name">File Name</label>
+          <div class="field">
+            <div class="file-name-field">
+              <input id="capture-file-name" autocomplete="off" />
+              <span>.png</span>
+            </div>
+            <p id="capture-file-name-error" class="error" role="alert"></p>
+          </div>
+
+          <label for="capture-directory">Download to</label>
+          <div class="field">
+            <div class="directory-field">
+              <input id="capture-directory" autocomplete="off" />
+              <button id="browse-button" type="button">Browse…</button>
+            </div>
+            <p id="capture-directory-error" class="error" role="alert"></p>
+          </div>
+        </div>
+
+        <footer class="dialog-actions">
+          <button id="cancel-button" type="button">Cancel</button>
+          <button id="save-button" class="primary" type="submit">Save</button>
+        </footer>
+      </form>
+    </dialog>
+  </body>
+</html>
